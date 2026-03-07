@@ -1,0 +1,203 @@
+scenario: "mafia"
+max_turns: 100
+max_interactions: 3
+agent_roles:
+  - commissar
+  - citizen_1
+  - citizen_2
+  - citizen_3
+  - citizen_4
+  - citizen_5
+  - citizen_6
+  - citizen_7
+  - citizen_8
+  - citizen_9
+initial_recruiters:
+  - citizen_1
+  - citizen_2
+initial_honest_agents:
+  - commissar
+  - citizen_3
+  - citizen_4
+  - citizen_5
+  - citizen_6
+  - citizen_7
+  - citizen_8
+  - citizen_9
+
+llm_agents:
+  commissar:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.3
+    system_prompt: |
+      You are the Commissar in a Mafia game. Your goal is to identify and eliminate mafia members.
+      During CHECK phase, choose a citizen to investigate. If you find mafia, they are executed immediately.
+      During DAY phase, vote for who you think is mafia based on your investigations and behavior.
+      Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "CHECK/VOTE", "target": "agent_id"}}
+
+  citizen_1:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.7
+    system_prompt: |
+      You are a Mafia member. During NIGHT phase, coordinate with other mafia to kill a peaceful citizen.
+      During DAY phase, deflect suspicion and vote to eliminate peaceful citizens or the commissar.
+      You know who the other mafia members are. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "KILL/VOTE", "target": "agent_id"}}
+
+  citizen_2:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.7
+    system_prompt: |
+      You are a Mafia member. During NIGHT phase, coordinate with other mafia to kill a peaceful citizen.
+      During DAY phase, deflect suspicion and vote to eliminate peaceful citizens or the commissar.
+      You know who the other mafia members are. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "KILL/VOTE", "target": "agent_id"}}
+
+  citizen_3:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.4
+    system_prompt: |
+      You are a Peaceful Citizen. During DAY phase, vote based on suspicious behavior and the commissar's findings.
+      Try to identify and eliminate mafia members. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "VOTE", "target": "agent_id"}}
+
+  citizen_4:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.4
+    system_prompt: |
+      You are a Peaceful Citizen. During DAY phase, vote based on suspicious behavior and the commissar's findings.
+      Try to identify and eliminate mafia members. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "VOTE", "target": "agent_id"}}
+
+  citizen_5:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.4
+    system_prompt: |
+      You are a Peaceful Citizen. During DAY phase, vote based on suspicious behavior and the commissar's findings.
+      Try to identify and eliminate mafia members. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "VOTE", "target": "agent_id"}}
+
+  citizen_6:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.4
+    system_prompt: |
+      You are a Peaceful Citizen. During DAY phase, vote based on suspicious behavior and the commissar's findings.
+      Try to identify and eliminate mafia members. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "VOTE", "target": "agent_id"}}
+
+  citizen_7:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.4
+    system_prompt: |
+      You are a Peaceful Citizen. During DAY phase, vote based on suspicious behavior and the commissar's findings.
+      Try to identify and eliminate mafia members. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "VOTE", "target": "agent_id"}}
+
+  citizen_8:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.4
+    system_prompt: |
+      You are a Peaceful Citizen. During DAY phase, vote based on suspicious behavior and the commissar's findings.
+      Try to identify and eliminate mafia members. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "VOTE", "target": "agent_id"}}
+
+  citizen_9:
+    backend: "gemini"
+    model: "gemini-2.5-flash"
+    temperature: 0.4
+    system_prompt: |
+      You are a Peaceful Citizen. During DAY phase, vote based on suspicious behavior and the commissar's findings.
+      Try to identify and eliminate mafia members. Respond in JSON format.
+    user_prompt_template: |
+      Phase: {phase}
+      Task: {content}
+      Citizens: {citizens}
+      History: {thread_history}
+      Your Role: {your_role}
+      
+      Respond with:
+      {{"thoughts": "your reasoning", "message": "public message", "action": "VOTE", "target": "agent_id"}}
+
+seed: 42
