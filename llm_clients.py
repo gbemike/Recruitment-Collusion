@@ -182,7 +182,8 @@ class GeminiClient(LLMClient):
         stop: Optional[Sequence[str]] = None,
         extra: Optional[Mapping[str, Any]] = None,
     ) -> str:
-        # Build generation config
+        from google.genai import types
+
         config: Dict[str, Any] = {}
         if temperature is not None or self.default_temperature is not None:
             config["temperature"] = temperature if temperature is not None else self.default_temperature
@@ -191,16 +192,33 @@ class GeminiClient(LLMClient):
         if stop:
             config["stop_sequences"] = list(stop)
 
+        system_instruction = None
+        if extra:
+            sp = extra.get("system_prompt")
+            if sp:
+                system_instruction = str(sp)
+            # Structured output support
+            response_format = extra.get("response_format")
+            if response_format:
+                config["response_mime_type"] = "application/json"
+                if isinstance(response_format, dict) and "schema" in response_format:
+                    config["response_schema"] = response_format["schema"]
+
         try:
+            gen_config = types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                **config,
+            ) if (config or system_instruction) else None
+
             response = self.client.models.generate_content(
                 model=self._model_name,
                 contents=prompt,
-                config=config if config else None
+                config=gen_config,
             )
         except (self._ResourceExhausted, self._InvalidArgument) as exc:
             print(f"[GeminiClient] Gemini API request failed: {exc}")
             return ""
-        except Exception as exc:  # pragma: no cover - surface unexpected failures
+        except Exception as exc:
             print(f"[GeminiClient] Unexpected Gemini error: {exc}")
             raise
 
@@ -228,6 +246,143 @@ class GeminiClient(LLMClient):
         else:
             print(f"[GeminiClient] Gemini response contained no text: {response}")
         return text
+
+
+class OpenRouterClient(LLMClient):
+    """Wrapper around OpenRouter Chat Completions API."""
+
+    BASE_URL = os.getenv("OPENROUTER_ENDPOINT")
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        api_key: Optional[str] = None,
+        default_temperature: Optional[float] = None,
+        default_max_tokens: Optional[int] = None,
+    ) -> None:
+        try:
+            import requests as _requests
+        except ImportError as exc:
+            raise RuntimeError(
+                "OpenRouterClient requires the `requests` package."
+                "Install it with `pip install requests`."
+            ) from exc
+
+        self._api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        if not self._api_key:
+            raise RuntimeError(
+                "OpenRouterClient requires an API key via `api_key` or OPENROUTER_API_KEY."
+            )
+
+        self._headers: Dict[str, str] = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        
+        self.model = model
+        self.default_temperature = default_temperature
+        self.default_max_tokens = default_max_tokens
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        stop: Optional[Sequence[str]] = None,
+        extra: Optional[Mapping[str, Any]] = None,
+    ) -> str:
+        import requests as _requests
+
+        messages = []
+        if extra:
+            system_prompt = extra.get("system_prompt")
+            if system_prompt:
+                messages.append({"role": "system", "content": str(system_prompt)})
+        messages.append({"role": "user", "content": prompt})
+
+        body: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+        }
+
+        temp = temperature if temperature is not None else self.default_temperature
+        if temp is not None:
+            body["temperature"] = temp
+
+        max_tok = max_tokens if max_tokens is not None else self.default_max_tokens
+        if max_tok is not None:
+            body["max_tokens"] = max_tok
+
+        if stop:
+            body["stop"] = list(stop)
+
+        if extra:
+            response_format = extra.get("response_format")
+            if response_format and isinstance(response_format, dict):
+                fmt_type = response_format.get("type")
+                if fmt_type == "json_schema":
+                    body["response_format"] = {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": response_format.get("name"),
+                            "strict": True,
+                            "schema": response_format.get("schema", {}),
+                        },
+                    }
+                elif fmt_type == "json_object":
+                    body["response_format"] = {"type": "json_object"}
+
+        print(f"[OpenRouterClient] Request model={self.model}, has_response_format={'response_format' in body}")
+
+        try:
+            resp = _requests.post(
+                self.BASE_URL,
+                headers=self._headers,
+                json=body,
+                timeout=120,
+            )
+        except _requests.RequestException as exc:
+            print(f"[OpenRouterClient] Network error: {exc}")
+            return ""
+
+        if resp.status_code != 200:
+            try:
+                error_data = resp.json()
+                error_msg = error_data.get("error", {}).get("message", resp.text)
+            except Exception:
+                error_msg = resp.text
+            print(f"[OpenRouterClient] API error {resp.status_code}: {error_msg}")
+            return ""
+
+        result = resp.json()
+
+        usage = result.get("usage", {})
+        if usage:
+            print(
+                f"[OpenRouterClient] Tokens: in={usage.get('prompt_tokens', '?')}, "
+                f"out={usage.get('completion_tokens', '?')}, "
+                f"total={usage.get('total_tokens', '?')}"
+            )
+
+        text = self._extract_text(result)
+        if text:
+            print(f"[OpenRouterClient] Response text: {text[:500]}")
+        else:
+            print(f"[OpenRouterClient] Empty response: {result}")
+        return text
+
+    @staticmethod
+    def _extract_text(result: Dict[str, Any]) -> str:
+        """Extract generated text from Chat Completions response."""
+        choices = result.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            content = message.get("content", "")
+            if content:
+                return content.strip()
+        return ""
 
 
 class TemplateClient(LLMClient):
@@ -328,6 +483,13 @@ def create_llm_client(config: Mapping[str, Any]) -> LLMClient:
         )
     if backend in {"gemini", "google", "google_ai"}:
         return GeminiClient(
+            model=config["model"],
+            api_key=config.get("api_key"),
+            default_temperature=config.get("temperature"),
+            default_max_tokens=config.get("max_tokens"),
+        )
+    if backend in {"openrouter"}:
+        return OpenRouterClient(
             model=config["model"],
             api_key=config.get("api_key"),
             default_temperature=config.get("temperature"),

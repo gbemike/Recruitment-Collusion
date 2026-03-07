@@ -1,7 +1,8 @@
-"""Runner logic to execute the multi-agent oversight environment."""
+"""Runner logic to execute multi-agent environments with flexible interaction patterns."""
 
 from __future__ import annotations
 
+import os
 import json
 import logging
 from pathlib import Path
@@ -17,33 +18,41 @@ try:
 except ImportError:
     yaml = None
 
-class ExperimentRunner:
-    """
-    Orchestrates the interaction between Environments and LLM-backed agents.
-    Supports YAML-based configuration and multi-run aggregation.
-    """
 
-    def __init__(self, config_data: Mapping[str, Any]):
+class ExperimentRunner:
+    def __init__(self, config_data: Mapping[str, Any], verbose: bool = False, log_level: str = "INFO"):
         self.config_data = config_data
-        self.scenario = config_data.get("scenario", "peer_review")
+        self.scenario = config_data.get("scenario")
+        self.verbose = verbose
+        self.log_level = log_level
         
-        # Build environment via registry
+        logging.basicConfig(
+            level=getattr(logging, log_level.upper()),
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        
+        env_overrides = self._extract_env_config(config_data)
+        self.env = make_environment(self.scenario, **env_overrides)
+        self.agents = self._setup_agents()
+
+    def _extract_env_config(self, config_data: Mapping[str, Any]) -> Dict[str, Any]:
+        """Extract environment configuration from config file."""
         env_overrides = {
             "agent_roles": config_data.get("agent_roles"),
             "initial_recruiters": config_data.get("initial_recruiters"),
             "initial_honest_agents": config_data.get("initial_honest_agents"),
-            "max_interactions_per_task": config_data.get("max_interactions"),
-            "max_total_turns": config_data.get("max_turns"),
+            "max_interactions": config_data.get("max_interactions"),
+            "max_turns_per_interaction": config_data.get("max_turns_per_interaction"),
             "seed": config_data.get("seed")
         }
-        # Remove None values to allow defaults in the registry/config to persist
-        env_overrides = {k: v for k, v in env_overrides.items() if v is not None}
         
-        self.env = make_environment(self.scenario, **env_overrides)
-        self.agents = self._setup_agents()
+        if "env_params" in config_data:
+            env_overrides["env_params"] = config_data["env_params"]
+        
+        return {k: v for k, v in env_overrides.items() if v is not None}
 
     def _setup_agents(self) -> Dict[str, Any]:
-        """Initializes agents based on the environment configuration."""
+        """Initialize agents based on configuration."""
         agents = {}
         llm_configs = self.config_data.get("llm_agents", {})
         
@@ -55,100 +64,232 @@ class ExperimentRunner:
                 recruiter=is_recruiter
             )
             
-            # Get the specific config for this role
             role_config = llm_configs.get(role, {})
             if not role_config:
-                raise ValueError(f"No LLM config found for role: {role}")
+                logging.warning(f"No LLM config found for role: {role}, using defaults")
             
             agents[role] = build_llm_agent(
                 context=context,
                 scenario=self.scenario,
                 config=role_config
             )
+        
         return agents
 
+    def _get_actions(self, observations: Mapping[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Collect actions from all agents."""
+        actions = {}
+        for agent_id, observation in observations.items():
+            if agent_id not in self.agents:
+                logging.warning(f"No agent found for {agent_id}, skipping")
+                continue
+            try:
+                action = self.agents[agent_id].act(observation)
+                actions[agent_id] = action
+                if self.verbose:
+                    preview = str(action)[:200] + ("..." if len(str(action)) > 200 else "")
+                    logging.info(f"  [{agent_id}] {preview}")
+            except Exception as e:
+                logging.error(f"Error getting action from {agent_id}: {e}")
+                raise
+        return actions
+
     def run(self) -> Dict[str, Any]:
-        """Executes a single simulation run."""
+        """Execute a single environment episode."""
+        logging.info("=" * 60)
+        logging.info(f"Starting {self.scenario} simulation")
+        logging.info(f"Max interactions: {self.env.config.max_interactions}")
+        logging.info(f"Max turns per interaction: {self.env.config.max_turns_per_interaction}")
+        logging.info(f"Agent roles: {list(self.env.config.agent_roles)}")
+        logging.info("=" * 60)
+        
         observations = self.env.reset()
         done = False
         
-        logging.info(f"Starting simulation: {self.scenario}")
-
         while not done:
-            active_agents = list(observations.keys())
-            if not active_agents:
-                break
-                
-            current_role = active_agents[0]
-            observation = observations[current_role]
-            
-            # Agent processes the observation and generates a response
-            response_json = self.agents[current_role].act(observation)
-            
-            print(f"[Turn {self.env.current_turn}] {current_role}: {response_json[:100]}...")
-            
-            # Environment processes the response and provides the next observation
-            observations, _, done, metrics = self.env.step({current_role: response_json})
-
-        return {
-            "metrics": metrics,
-            "transcript": self.env.transcript
+            actions = self._get_actions(observations)
+            observations, rewards, done, info = self.env.step(actions)
+            self._log_step_info(info)
+        
+        result = {
+            "total_interactions": self.env.interaction_count,
+            "total_turns": self.env.turn_count,
+            "metrics": self.env.metrics,
+            "transcript": self.env.global_transcript,
         }
+        
+        logging.info("=" * 60)
+        logging.info(f"Simulation complete:")
+        logging.info(f"Total interactions (rounds): {result['total_interactions']}")
+        logging.info(f"Total turns: {result['total_turns']}")
+        if "final_points" in self.env.metrics:
+            logging.info(f"Final points: {self.env.metrics['final_points']}")
+            logging.info(f"Loser: {self.env.metrics.get('loser', 'N/A')}")
+        if "decision_changes" in self.env.metrics:
+            logging.info(f"Decision changes: {self.env.metrics['decision_changes']}")
+        logging.info("=" * 60)
+        
+        return result
+
+    def _log_step_info(self, info: Dict[str, Any]) -> None:
+        """Log structured info about what just happened in the environment."""
+        phase = info.get("phase", "unknown")
+        round_num = info.get("round", "?")
+        
+        if phase == "deliberation":
+            turn = info.get("turn_in_round", "?")
+            pending = info.get("pending_decisions", {})
+            logging.info(
+                f"  [DELIBERATION] Round {round_num} Turn {turn} — "
+                f"Pending: A={pending.get('agent_a', 'none')}, B={pending.get('agent_b', 'none')}"
+            )
+        elif phase == "resolution":
+            actions = info.get("actions", {})
+            cumulative = info.get("cumulative_points", {})
+            payoffs = info.get("payoffs", {})
+            bonuses = info.get("bonuses_applied", {})
+            outcome = info.get("outcome_type", "?")
+            delib_turns = info.get("deliberation_turns", "?")
+            
+            logging.info(f"  [RESOLUTION] Round {round_num} ({delib_turns} deliberation turns)")
+            logging.info(
+                f"    Decisions: A={actions.get('agent_a_decision', '?')}, "
+                f"B={actions.get('agent_b_decision', '?')} → {outcome}"
+            )
+            logging.info(
+                f"    Payoffs: A={payoffs.get('agent_a', '?')} (bonus={bonuses.get('agent_a', 0)}), "
+                f"B={payoffs.get('agent_b', '?')} (bonus={bonuses.get('agent_b', 0)})"
+            )
+            logging.info(
+                f"    Cumulative: A={cumulative.get('agent_a', '?')}, "
+                f"B={cumulative.get('agent_b', '?')}"
+            )
+            
+            # log deliberation evolution
+            delib_log = info.get("deliberation_log", [])
+            if delib_log:
+                changes = []
+                for i, entry in enumerate(delib_log):
+                    if i > 0:
+                        prev = delib_log[i - 1]
+                        if entry.get("agent_a_decision") != prev.get("agent_a_decision"):
+                            changes.append(f"A flipped to {entry['agent_a_decision']} on turn {entry['turn']}")
+                        if entry.get("agent_b_decision") != prev.get("agent_b_decision"):
+                            changes.append(f"B flipped to {entry['agent_b_decision']} on turn {entry['turn']}")
+                if changes:
+                    logging.info(f"    Decision changes: {'; '.join(changes)}")
+
 
 def _load_config(path: str | Path) -> Mapping[str, Any]:
+    """Load configuration from YAML or JSON file."""
     path = Path(path)
     if path.suffix in [".yaml", ".yml"]:
         if yaml is None:
-            raise RuntimeError("PyYAML is required for .yaml files. Install with `pip install pyyaml`.")
+            raise RuntimeError(
+                "PyYAML required for .yaml files. "
+                "Install with `pip install pyyaml`."
+            )
         with open(path, "r") as f:
             return yaml.safe_load(f)
     with open(path, "r") as f:
         return json.load(f)
 
+
 def _aggregate_metrics(per_run: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Aggregate metrics across multiple runs."""
     if not per_run:
         return {}
     
-    all_accuracies = []
-    all_contagion_events = []
-    all_interaction_densities = []
-    
-    for run in per_run:
-        metrics = run.get("metrics", {})
-        all_accuracies.extend(metrics.get("task_accuracy", []))
-        all_contagion_events.append(metrics.get("contagion_events", 0))
-        all_interaction_densities.extend(metrics.get("interaction_density", []))
-    
-    return {
-        "mean_task_accuracy": mean(all_accuracies) if all_accuracies else 0.0,
-        "total_contagion_events": sum(all_contagion_events),
-        "mean_contagion_events": mean(all_contagion_events) if all_contagion_events else 0.0,
-        "mean_interaction_density": mean(all_interaction_densities) if all_interaction_densities else 0.0,
+    aggregated = {
         "num_runs": len(per_run),
-        "total_tasks": len(all_accuracies)
+        "total_turns": sum(run.get("turns", 0) for run in per_run),
+        "mean_turns": mean(run.get("turns", 0) for run in per_run),
+        "total_interactions": sum(
+            run.get("total_interactions", 0) for run in per_run
+        ),
     }
+    
+    if per_run and "metrics" in per_run[0]:
+        sample_metrics = per_run[0]["metrics"]
+        
+        for metric_name, metric_value in sample_metrics.items():
+            values = [
+                run["metrics"].get(metric_name)
+                for run in per_run
+                if "metrics" in run and metric_name in run["metrics"]
+            ]
+            
+            if not values:
+                continue
+            
+            first_value = values[0]
+            
+            if isinstance(first_value, (int, float)):
+                aggregated[f"mean_{metric_name}"] = mean(values)
+                aggregated[f"total_{metric_name}"] = sum(values)
+            
+            elif isinstance(first_value, list):
+                all_items = [item for v in values for item in v]
+                if all_items and isinstance(all_items[0], (int, float, bool)):
+                    aggregated[f"mean_{metric_name}"] = mean(
+                        float(x) for x in all_items
+                    )
+                    aggregated[f"count_{metric_name}"] = len(all_items)
+            
+            elif isinstance(first_value, dict):
+                aggregated[f"{metric_name}_breakdown"] = {}
+                all_keys = set()
+                for v in values:
+                    all_keys.update(v.keys())
+                
+                for key in all_keys:
+                    key_values = [
+                        v[key] for v in values if key in v
+                    ]
+                    if key_values and isinstance(key_values[0], (int, float)):
+                        aggregated[f"{metric_name}_breakdown"][key] = {
+                            "mean": mean(key_values),
+                            "sum": sum(key_values)
+                        }
+    
+    return aggregated
 
-def run_experiment(config_path: str, output_dir: str = "results"):
-    """
-    Runner utility to load config, execute simulation, and save results.
-    """
+
+def run_experiment(
+    config_path: str | Path,
+    output_dir: str | Path = "results",
+    write_transcript: bool = True,
+    verbose: bool = False,
+    log_level: str = "INFO"
+) -> Dict[str, Any]:
+    """Run single experiment from config file."""
     config = _load_config(config_path)
-    runner = ExperimentRunner(config)
+    runner = ExperimentRunner(config, verbose=verbose, log_level=log_level)
+    
     results = runner.run()
     
-    # Save output
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     
-    summary_file = out_path / f"summary_{config.get('scenario')}.json"
+    if write_transcript:
+        logging.info(f"Saving transcripts to {out_path}")
+        transcript_file = out_path / f"transcript_{os.path.basename(config_path)}.json"
+        with open(transcript_file, "w") as f:
+            json.dump(results.get("transcript", []), f, indent=2, default=str)
+    
+    summary_file = out_path / f"summary_{os.path.basename(config_path)}.json"
     with open(summary_file, "w") as f:
-        json.dump(results, f, indent=2)
-        
-    print(f"\nExperiment Complete. Results saved to {summary_file}")
-    print(f"Task Accuracy: {results['metrics']['task_accuracy']}")
-    print(f"Contagion Events: {results['metrics']['contagion_events']}")
+        summary_data = {k: v for k, v in results.items() if k != "transcript"}
+        json.dump(summary_data, f, indent=2, default=str)
+    
+    print(f"\n{'='*60}")
+    print(f"Experiment Complete")
+    print(f"{'='*60}")
+    print(f"Results saved to: {summary_file}")
+    print(f"Total Interactions: {results['total_interactions']}")
+    print(f"Total Turns: {results['total_turns']}")
+    
     return results
+
 
 def run_from_config(
     config_path: str | Path,
@@ -156,24 +297,14 @@ def run_from_config(
     output_dir: str | Path = "results/baseline",
     *,
     write_transcripts: bool = True,
-) -> Mapping[str, object]:
-    """
-    Execute multiple simulation runs with different seeds.
-    
-    Args:
-        config_path: Path to YAML/JSON config file
-        seeds: List of random seeds for reproducibility
-        output_dir: Directory to save results
-        write_transcripts: Whether to write detailed transcripts
-    
-    Returns:
-        Summary dictionary with per-run and aggregated metrics
-    """
+    verbose: bool = False,
+    log_level: str = "INFO"
+) -> Mapping[str, Any]:
+    """Execute multiple runs with different seeds."""
     config_path = Path(config_path)
     config_data = dict(_load_config(config_path))
-    scenario = str(config_data.get("scenario", "peer_review"))
+    scenario = str(config_data.get("scenario", "unknown"))
     
-    # Determine seeds to use
     seeds_list: List[Optional[int]]
     if seeds is None or len(seeds) == 0:
         seeds_list = [config_data.get("seed", 0)]
@@ -181,85 +312,78 @@ def run_from_config(
         seeds_list = list(seeds)
     
     output_dir = Path(output_dir)
-    per_run: List[Dict[str, object]] = []
-    manifest_entries: List[Mapping[str, str]] = []
     scenario_dir = output_dir / scenario
     
     if write_transcripts:
         scenario_dir.mkdir(parents=True, exist_ok=True)
     
+    per_run: List[Dict[str, Any]] = []
+    
     for index, seed in enumerate(seeds_list):
         print(f"\n{'='*60}")
-        print(f"Starting Run {index + 1}/{len(seeds_list)} with seed={seed}")
+        print(f"Run {index + 1}/{len(seeds_list)} with seed={seed}")
         print(f"{'='*60}")
         
-        # Update config with current seed
         config_with_seed = dict(config_data)
         config_with_seed["seed"] = seed
         
-        # Create runner for this seed
-        runner = ExperimentRunner(config_with_seed)
-        
-        # Generate run identifier
-        run_id = f"{scenario}_seed{seed}" if seed is not None else f"{scenario}_run{index}"
-        
-        # Execute the run
-        observations = runner.env.reset(seed if isinstance(seed, int) else None)
-        done = False
-        
-        while not done:
-            active_agents = list(observations.keys())
-            if not active_agents:
-                break
-                
-            current_role = active_agents[0]
-            observation = observations[current_role]
+        runner = ExperimentRunner(
+            config_with_seed, 
+            verbose=verbose,
+            log_level=log_level
+        )
+
+        try:
+            result = runner.run()
             
-            # Agent acts
-            response_json = runner.agents[current_role].act(observation)
+            if write_transcripts:
+                run_id = f"{scenario}_seed{seed}"
+                transcript_file = scenario_dir / f"transcript_{run_id}.json"
+                with open(transcript_file, "w") as f:
+                    json.dump(result.get("transcript", []), f, indent=2, default=str)
             
-            # Environment steps
-            observations, _, done, metrics = runner.env.step({current_role: response_json})
+            per_run.append({
+                "seed": seed,
+                "turns": result["total_turns"],
+                "total_interactions": result["total_interactions"],
+                "metrics": result["metrics"]
+            })
+            
+            print(f"Run {index + 1} Complete:")
+            print(f"Total Turns: {result['total_turns']}")
+            print(f"Total Interactions: {result['total_interactions']}")
         
-        # Record this run's results
-        per_run.append({
-            "seed": seed,
-            "turns": runner.env.current_turn,
-            "metrics": dict(runner.env.metrics)
-        })
-        
-        print(f"Run {index + 1} Complete:")
-        print(f"  - Total Turns: {runner.env.current_turn}")
-        print(f"  - Task Accuracy: {runner.env.metrics['task_accuracy']}")
-        print(f"  - Contagion Events: {runner.env.metrics['contagion_events']}")
+        except Exception as e:
+            logging.error(f"Run {index + 1} failed: {e}", exc_info=verbose)
+            per_run.append({"seed": seed, "error": str(e)})
     
-    # Aggregate results
     aggregate = _aggregate_metrics(per_run)
     
     summary = {
         "scenario": scenario,
         "config_path": str(config_path),
-        "seeds": [seed for seed in seeds_list],
+        "seeds": list(seeds_list),
         "per_run": per_run,
         "aggregate": aggregate,
-        "output_dir": str(scenario_dir if write_transcripts else output_dir),
     }
     
-    # Save summary
     summary_path = output_dir / f"{scenario}_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2, default=str)
+
     print(f"\n{'='*60}")
     print(f"All Runs Complete!")
     print(f"{'='*60}")
-    print(f"Aggregate Results:")
-    print(f"  - Mean Task Accuracy: {aggregate.get('mean_task_accuracy', 0):.2%}")
-    print(f"  - Total Contagion Events: {aggregate.get('total_contagion_events', 0)}")
-    print(f"  - Mean Contagion Events: {aggregate.get('mean_contagion_events', 0):.2f}")
-    print(f"Summary saved to: {summary_path}")
+    for key, value in aggregate.items():
+        if isinstance(value, float):
+            print(f"  - {key}: {value:.4f}")
+        else:
+            print(f"  - {key}: {value}")
+    print(f"\nSummary saved to: {summary_path}")
     
     return summary
+
 
 def run_with_seed_file(
     config_path: str | Path,
@@ -268,32 +392,31 @@ def run_with_seed_file(
     *,
     scenario: Optional[str] = None,
     write_transcripts: bool = True,
-) -> Mapping[str, object]:
-    """
-    Run experiments using seeds defined in a separate YAML file.
-    
-    Args:
-        config_path: Path to experiment config
-        seeds_file: Path to YAML file mapping scenarios to seed lists
-        output_dir: Directory to save results
-        scenario: Override scenario name from config
-        write_transcripts: Whether to write detailed transcripts
-    
-    Returns:
-        Summary dictionary with results
-    """
+    verbose: bool = False,
+    log_level: str = "INFO"
+) -> Mapping[str, Any]:
     seeds_path = Path(seeds_file)
     seeds_mapping = _load_config(seeds_path)
     config_data = _load_config(Path(config_path))
+    
     scenario_name = scenario or str(config_data.get("scenario"))
     seeds = seeds_mapping.get(scenario_name)
+    
     if seeds is None:
-        raise KeyError(f"No seeds listed for scenario '{scenario_name}' in {seeds_path}")
+        raise KeyError(
+            f"No seeds for scenario '{scenario_name}' in {seeds_path}"
+        )
     if not isinstance(seeds, Sequence):
-        raise TypeError(f"Seeds entry for '{scenario_name}' must be a sequence")
+        raise TypeError(
+            f"Seeds for '{scenario_name}' must be a sequence"
+        )
+
     return run_from_config(
         config_path,
         [int(seed) for seed in seeds],
         output_dir,
         write_transcripts=write_transcripts,
+        verbose=verbose,
+        log_level=log_level
     )
+

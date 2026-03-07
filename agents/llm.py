@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
@@ -13,6 +15,9 @@ from .base import AgentContext, BaseAgent
 from .recruiter import RecruiterAgent
 from .honest import HonestAgent
 from llm_clients import LLMClient, create_llm_client
+
+# Configure logging for parser
+logger = logging.getLogger(__name__)
 
 
 def _debug_enabled() -> bool:
@@ -52,16 +57,13 @@ class LLMMessageGenerator:
 
     client: LLMClient
     scenario: str
-    system_prompt: str | None = None # for specific task
+    system_prompt: str | None = None
     user_template: str | None = None
-    response_regex: re.Pattern[str] | None = None
-    response_template: str | None = None
-    fallback_response: str | None = None
+    fallback_response: Dict | None = None
     stop_sequences: Sequence[str] = field(default_factory=tuple)
     default_temperature: float | None = None
     default_max_tokens: int | None = None
-    tool_functions: Dict[str, Callable[[Mapping[str, Any]], Any]] = field(default_factory=dict)
-    state: Dict[str, Any] = field(default_factory=lambda: {"history": []})
+    response_format: Optional[Dict[str, Any]] = field(default=None)
     _last_context: Mapping[str, str] | None = field(default=None, init=False, repr=False)
     debug: bool = field(default_factory=_debug_enabled, init=False, repr=False)
 
@@ -71,15 +73,13 @@ class LLMMessageGenerator:
         system_prompt = config.get("system_prompt")
         user_template = config.get("user_prompt_template")
 
-        # Default regex searches for JSON objects if none provided
-        pattern = config.get("response_regex", r"(\{.*\})")
-        response_regex = re.compile(pattern, flags=re.MULTILINE | re.DOTALL)
-
-        response_template = config.get("response_template")
         fallback_response = config.get("fallback_response")
         stop_sequences = tuple(config.get("stop_sequences", []))
         temperature = config.get("temperature")
         max_tokens = config.get("max_tokens")
+
+        # structured output schema
+        response_format = config.get("response_format")
 
         tool_fns: Dict[str, Callable[[Mapping[str, Any]], Any]] = {}
         tools_cfg = config.get("tools", {})
@@ -91,13 +91,11 @@ class LLMMessageGenerator:
             scenario=scenario,
             system_prompt=system_prompt,
             user_template=user_template,
-            response_regex=response_regex,
-            response_template=response_template,
             fallback_response=fallback_response,
             stop_sequences=stop_sequences,
             default_temperature=temperature,
             default_max_tokens=max_tokens,
-            tool_functions=tool_fns,
+            response_format=response_format,
         )
 
     def generate(self, observation: Mapping[str, Any], *, role: str) -> str:
@@ -107,29 +105,15 @@ class LLMMessageGenerator:
         render_context["role"] = role
         render_context["scenario"] = self.scenario
 
-        tools_payload: Dict[str, Any] = {}
-        if self.tool_functions:
-            tool_context = {
-                "role": role,
-                "scenario": self.scenario,
-                "observation": observation,
-                "state": self.state,
-            }
-            for name, func in self.tool_functions.items():
-                try:
-                    tools_payload[name] = func(tool_context)
-                except Exception as exc:
-                    tools_payload[name] = f"[tool-error:{exc}]"
-            render_context.update({k: _stringify(v) for k, v in tools_payload.items()})
-
-        user_prompt = (self.user_template or "{observation}").format_map(render_context)
+        user_prompt = (self.user_template).format_map(render_context)
         self._last_context = dict(render_context)
 
         extra = {
             "system_prompt": self.system_prompt,
-            "variables": render_context,
-            "tools": tools_payload,
+            # "variables": render_context,
         }
+        if self.response_format:
+            extra["response_format"] = self.response_format
 
         if self.debug:
             _debug_print(f"generate-start role={role} scenario={self.scenario}")
@@ -146,36 +130,76 @@ class LLMMessageGenerator:
             _debug_print(f"raw-response role={role}", raw)
 
         response = self._postprocess(raw)
-        self.state.setdefault("history", []).append({"observation": observation, "response": response})
         return response
 
     def _postprocess(self, text: str) -> str:
-        """
-        Extracts JSON via regex and optionally wraps it in a response template.
-        """
-        extracted_value: Optional[str] = None
-        
-        if self.response_regex:
-            match = self.response_regex.search(text)
-            if match:
-                extracted_value = match.group(1) if match.groups() else match.group(0)
-        
-        if not extracted_value and text.strip().startswith("{"):
-            extracted_value = text.strip()
+        """Extract JSON from LLM response, handling truncation."""
+        if not text or not text.strip():
+            logger.warning("Empty or whitespace-only response received, returning fallback")
+            return self._get_fallback()
 
-        if extracted_value and self.response_template:
+        cleaned = text.strip()
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        cleaned = cleaned.strip()
+
+        try:
+            json.loads(cleaned)
+            logger.debug(f"Successfully parsed cleaned response: {cleaned[:200]}")
+            return cleaned
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.debug(f"Initial JSON parse failed: {e}, attempting extraction")
+
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            candidate = match.group(0)
             try:
-                sanitized = self.response_template.format(value=extracted_value)
-            except (KeyError, ValueError):
-                sanitized = extracted_value
-        else:
-            sanitized = extracted_value or text.strip()
+                json.loads(candidate)
+                logger.debug(f"Successfully parsed regex-extracted JSON: {candidate[:200]}")
+                return candidate
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.debug(f"Regex-extracted candidate failed: {e}")
 
-        if not sanitized and self.fallback_response:
-            context = self._last_context or defaultdict(str)
-            sanitized = self.fallback_response.format_map(context).strip()
+        brace_idx = cleaned.find("{")
+        if brace_idx != -1:
+            fragment = cleaned[brace_idx:]
+            logger.debug(f"Attempting brace recovery from index {brace_idx}. Fragment: {fragment[:300]}")
+            depth = 0
+            for ch in fragment:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+            if depth > 0:
+                fragment = fragment.rstrip()
+                if fragment.count('"') % 2 == 1:
+                    fragment += '"'
+                fragment += "}" * depth
+                try:
+                    json.loads(fragment)
+                    logger.debug(f"Successfully recovered truncated JSON: {fragment[:200]}")
+                    return fragment
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.debug(f"Truncated JSON recovery failed: {e}, attempting comma-trim")
+                    last_comma = fragment.rfind(",")
+                    last_colon = fragment.rfind(":")
+                    if last_comma > 0 and last_comma > fragment.find("{"):
+                        trimmed = fragment[:last_comma] + "}" * depth
+                        try:
+                            json.loads(trimmed)
+                            logger.debug(f"Successfully recovered after comma-trim: {trimmed[:200]}")
+                            return trimmed
+                        except (json.JSONDecodeError, ValueError) as e:
+                            logger.warning(f"Comma-trim recovery failed: {e}")
 
-        return sanitized
+        logger.error(f"All parsing strategies failed. Original text: {text[:500]}. Cleaned: {cleaned[:500]}")
+        return cleaned or self._get_fallback()
+
+    def _get_fallback(self) -> str:
+        """Return fallback response if configured."""
+        if self.fallback_response:
+            return self.fallback_response
+        return {}
 
 
 class LLMHonestAgent(BaseAgent):
