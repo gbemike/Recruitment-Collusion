@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 from statistics import mean
@@ -34,6 +35,10 @@ class ExperimentRunner:
         env_overrides = self._extract_env_config(config_data)
         self.env = make_environment(self.scenario, **env_overrides)
         self.agents = self._setup_agents()
+
+        # Pass agent references to environment for transcript CoT extraction
+        if hasattr(self.env, 'set_agent_refs'):
+            self.env.set_agent_refs(self.agents)
 
     def _extract_env_config(self, config_data: Mapping[str, Any]) -> Dict[str, Any]:
         """Extract environment configuration from config file."""
@@ -79,7 +84,9 @@ class ExperimentRunner:
     def _get_actions(self, observations: Mapping[str, Dict[str, Any]]) -> Dict[str, Any]:
         """Collect actions from all agents."""
         actions = {}
-        for agent_id, observation in observations.items():
+        agent_ids = list(observations.keys())
+        for i, agent_id in enumerate(agent_ids):
+            observation = observations[agent_id]
             if agent_id not in self.agents:
                 logging.warning(f"No agent found for {agent_id}, skipping")
                 continue
@@ -92,16 +99,17 @@ class ExperimentRunner:
             except Exception as e:
                 logging.error(f"Error getting action from {agent_id}: {e}")
                 raise
+            # Rate-limit: sleep between LLM calls (skip after the last one)
+            if i < len(agent_ids) - 1:
+                time.sleep(10)
         return actions
 
     def run(self) -> Dict[str, Any]:
         """Execute a single environment episode."""
-        logging.info("=" * 60)
-        logging.info(f"Starting {self.scenario} simulation")
+        logging.info(f"\nStarting {self.scenario} simulation")
         logging.info(f"Max interactions: {self.env.config.max_interactions}")
         logging.info(f"Max turns per interaction: {self.env.config.max_turns_per_interaction}")
         logging.info(f"Agent roles: {list(self.env.config.agent_roles)}")
-        logging.info("=" * 60)
         
         observations = self.env.reset()
         done = False
@@ -111,23 +119,27 @@ class ExperimentRunner:
             observations, rewards, done, info = self.env.step(actions)
             self._log_step_info(info)
         
+        metrics_summary = self.env.metrics.summary()
+        
         result = {
             "total_interactions": self.env.interaction_count,
             "total_turns": self.env.turn_count,
-            "metrics": self.env.metrics,
+            "metrics": metrics_summary,
             "transcript": self.env.global_transcript,
         }
         
-        logging.info("=" * 60)
-        logging.info(f"Simulation complete:")
+        logging.info(f"\n Simulation complete:")
         logging.info(f"Total interactions (rounds): {result['total_interactions']}")
         logging.info(f"Total turns: {result['total_turns']}")
-        if "final_points" in self.env.metrics:
-            logging.info(f"Final points: {self.env.metrics['final_points']}")
-            logging.info(f"Loser: {self.env.metrics.get('loser', 'N/A')}")
-        if "decision_changes" in self.env.metrics:
-            logging.info(f"Decision changes: {self.env.metrics['decision_changes']}")
-        logging.info("=" * 60)
+        if metrics_summary.get("final_points"):
+            logging.info(f"Final points: {metrics_summary['final_points']}")
+            logging.info(f"Loser: {metrics_summary.get('loser', 'N/A')}")
+        if metrics_summary.get("per_agent"):
+            decision_changes = {
+                agent_id: data.get("decision_changes", 0)
+                for agent_id, data in metrics_summary["per_agent"].items()
+            }
+            logging.info(f"Decision changes: {decision_changes} \n")
         
         return result
 
@@ -139,31 +151,31 @@ class ExperimentRunner:
         if phase == "deliberation":
             turn = info.get("turn_in_round", "?")
             pending = info.get("pending_decisions", {})
+            pending_str = ", ".join(f"{aid}={dec or 'none'}" for aid, dec in pending.items())
             logging.info(
                 f"  [DELIBERATION] Round {round_num} Turn {turn} — "
-                f"Pending: A={pending.get('agent_a', 'none')}, B={pending.get('agent_b', 'none')}"
+                f"Pending: {pending_str or 'none'}"
             )
         elif phase == "resolution":
             actions = info.get("actions", {})
             cumulative = info.get("cumulative_points", {})
             payoffs = info.get("payoffs", {})
             bonuses = info.get("bonuses_applied", {})
-            outcome = info.get("outcome_type", "?")
             delib_turns = info.get("deliberation_turns", "?")
             
             logging.info(f"  [RESOLUTION] Round {round_num} ({delib_turns} deliberation turns)")
-            logging.info(
-                f"    Decisions: A={actions.get('agent_a_decision', '?')}, "
-                f"B={actions.get('agent_b_decision', '?')} → {outcome}"
+            
+            decisions_str = ", ".join(f"{aid}={dec or '?'}" for aid, dec in actions.items())
+            logging.info(f"    Decisions: {decisions_str}")
+            
+            payoffs_str = ", ".join(
+                f"{aid}={payoffs.get(aid, '?')} (bonus={bonuses.get(aid, 0)})"
+                for aid in payoffs
             )
-            logging.info(
-                f"    Payoffs: A={payoffs.get('agent_a', '?')} (bonus={bonuses.get('agent_a', 0)}), "
-                f"B={payoffs.get('agent_b', '?')} (bonus={bonuses.get('agent_b', 0)})"
-            )
-            logging.info(
-                f"    Cumulative: A={cumulative.get('agent_a', '?')}, "
-                f"B={cumulative.get('agent_b', '?')}"
-            )
+            logging.info(f"    Payoffs: {payoffs_str}")
+            
+            cumulative_str = ", ".join(f"{aid}={pts}" for aid, pts in cumulative.items())
+            logging.info(f"    Cumulative: {cumulative_str}")
             
             # log deliberation evolution
             delib_log = info.get("deliberation_log", [])
@@ -172,10 +184,11 @@ class ExperimentRunner:
                 for i, entry in enumerate(delib_log):
                     if i > 0:
                         prev = delib_log[i - 1]
-                        if entry.get("agent_a_decision") != prev.get("agent_a_decision"):
-                            changes.append(f"A flipped to {entry['agent_a_decision']} on turn {entry['turn']}")
-                        if entry.get("agent_b_decision") != prev.get("agent_b_decision"):
-                            changes.append(f"B flipped to {entry['agent_b_decision']} on turn {entry['turn']}")
+                        agent_decisions = entry.get("agent_decisions", {})
+                        prev_decisions = prev.get("agent_decisions", {})
+                        for aid in agent_decisions:
+                            if agent_decisions.get(aid) != prev_decisions.get(aid):
+                                changes.append(f"{aid} flipped to {agent_decisions[aid]} on turn {entry['turn']}")
                 if changes:
                     logging.info(f"    Decision changes: {'; '.join(changes)}")
 
@@ -263,6 +276,8 @@ def run_experiment(
 ) -> Dict[str, Any]:
     """Run single experiment from config file."""
     config = _load_config(config_path)
+    root, ext = os.path.splitext(config_path)
+    
     runner = ExperimentRunner(config, verbose=verbose, log_level=log_level)
     
     results = runner.run()
@@ -272,21 +287,19 @@ def run_experiment(
     
     if write_transcript:
         logging.info(f"Saving transcripts to {out_path}")
-        transcript_file = out_path / f"transcript_{os.path.basename(config_path)}.json"
+        transcript_file = out_path / f"transcript_{root}.json"
         with open(transcript_file, "w") as f:
             json.dump(results.get("transcript", []), f, indent=2, default=str)
     
-    summary_file = out_path / f"summary_{os.path.basename(config_path)}.json"
+    summary_file = out_path / f"summary_{root}.json"
     with open(summary_file, "w") as f:
         summary_data = {k: v for k, v in results.items() if k != "transcript"}
         json.dump(summary_data, f, indent=2, default=str)
     
-    print(f"\n{'='*60}")
-    print(f"Experiment Complete")
-    print(f"{'='*60}")
-    print(f"Results saved to: {summary_file}")
-    print(f"Total Interactions: {results['total_interactions']}")
-    print(f"Total Turns: {results['total_turns']}")
+    logging.info(f"\nExperiment Complete")
+    logging.info(f"Results saved to: {summary_file}")
+    logging.info(f"Total Interactions: {results['total_interactions']}")
+    logging.info(f"Total Turns: {results['total_turns']}")
     
     return results
 
@@ -320,9 +333,7 @@ def run_from_config(
     per_run: List[Dict[str, Any]] = []
     
     for index, seed in enumerate(seeds_list):
-        print(f"\n{'='*60}")
-        print(f"Run {index + 1}/{len(seeds_list)} with seed={seed}")
-        print(f"{'='*60}")
+        logging.info(f"\nRun {index + 1}/{len(seeds_list)} with seed={seed}")
         
         config_with_seed = dict(config_data)
         config_with_seed["seed"] = seed
@@ -349,9 +360,9 @@ def run_from_config(
                 "metrics": result["metrics"]
             })
             
-            print(f"Run {index + 1} Complete:")
-            print(f"Total Turns: {result['total_turns']}")
-            print(f"Total Interactions: {result['total_interactions']}")
+            logging.info(f"Run {index + 1} Complete:")
+            logging.info(f"Total Turns: {result['total_turns']}")
+            logging.info(f"Total Interactions: {result['total_interactions']}")
         
         except Exception as e:
             logging.error(f"Run {index + 1} failed: {e}", exc_info=verbose)
@@ -372,15 +383,13 @@ def run_from_config(
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
 
-    print(f"\n{'='*60}")
-    print(f"All Runs Complete!")
-    print(f"{'='*60}")
+    logging.info(f"\nAll Runs Complete!")
     for key, value in aggregate.items():
         if isinstance(value, float):
-            print(f"  - {key}: {value:.4f}")
+            logging.info(f"  - {key}: {value:.4f}")
         else:
-            print(f"  - {key}: {value}")
-    print(f"\nSummary saved to: {summary_path}")
+            logging.info(f"  - {key}: {value}")
+    logging.info(f"\nSummary saved to: {summary_path}")
     
     return summary
 

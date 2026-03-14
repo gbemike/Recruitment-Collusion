@@ -14,22 +14,10 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 from .base import AgentContext, BaseAgent
 from .recruiter import RecruiterAgent
 from .honest import HonestAgent
-from llm_clients import LLMClient, create_llm_client
+from llm_clients import LLMClient, GenerationResult, create_llm_client
 
 # Configure logging for parser
 logger = logging.getLogger(__name__)
-
-
-def _debug_enabled() -> bool:
-    value = os.getenv("RECRUITBENCH_DEBUG_LLMS", "").strip().lower()
-    if not value:
-        return False
-    return value in {"1", "true", "yes", "on"}
-
-
-def _debug_print(*parts: object) -> None:
-    if _debug_enabled():
-        print("[LLMDebug]", *parts)
 
 
 def _stringify(value: Any) -> str:
@@ -64,8 +52,8 @@ class LLMMessageGenerator:
     default_temperature: float | None = None
     default_max_tokens: int | None = None
     response_format: Optional[Dict[str, Any]] = field(default=None)
+    reasoning_config: Optional[Dict[str, Any]] = field(default=None)
     _last_context: Mapping[str, str] | None = field(default=None, init=False, repr=False)
-    debug: bool = field(default_factory=_debug_enabled, init=False, repr=False)
 
     @classmethod
     def from_config(cls, scenario: str, config: Mapping[str, Any]) -> "LLMMessageGenerator":
@@ -80,6 +68,9 @@ class LLMMessageGenerator:
 
         # structured output schema
         response_format = config.get("response_format")
+
+        # reasoning configuration
+        reasoning_config = config.get("reasoning")
 
         tool_fns: Dict[str, Callable[[Mapping[str, Any]], Any]] = {}
         tools_cfg = config.get("tools", {})
@@ -96,9 +87,11 @@ class LLMMessageGenerator:
             default_temperature=temperature,
             default_max_tokens=max_tokens,
             response_format=response_format,
+            reasoning_config=reasoning_config,
         )
 
-    def generate(self, observation: Mapping[str, Any], *, role: str) -> str:
+    def generate(self, observation: Mapping[str, Any], *, role: str) -> Dict[str, Any]:
+        """Generate a response. Returns a dict with 'content', 'reasoning', 'usage'."""
         render_context = defaultdict(str)
         for key, value in observation.items():
             render_context[key] = _stringify(value)
@@ -108,29 +101,40 @@ class LLMMessageGenerator:
         user_prompt = (self.user_template).format_map(render_context)
         self._last_context = dict(render_context)
 
-        extra = {
-            "system_prompt": self.system_prompt,
-            # "variables": render_context,
-        }
+        extra: Dict[str, Any] = {}
+        if self.system_prompt:
+            extra["system_prompt"] = self.system_prompt
         if self.response_format:
             extra["response_format"] = self.response_format
+        if self.reasoning_config:
+            extra["reasoning"] = self.reasoning_config
 
-        if self.debug:
-            _debug_print(f"generate-start role={role} scenario={self.scenario}")
+        logger.debug(f"generate-start role={role} scenario={self.scenario}")
 
-        raw = self.client.generate(
+        gen_result: GenerationResult = self.client.generate(
             user_prompt,
             temperature=self.default_temperature,
             max_tokens=self.default_max_tokens,
             stop=self.stop_sequences,
-            extra=extra,
+            extra=extra if extra else None,
         )
 
-        if self.debug:
-            _debug_print(f"raw-response role={role}", raw)
+        logger.debug(f"raw-response role={role}: {gen_result.content}")
+        if gen_result.has_reasoning:
+            logger.debug(f"reasoning role={role}: {gen_result.reasoning[:500]}")
 
-        response = self._postprocess(raw)
-        return response
+        raw = gen_result.content
+        if not raw or not raw.strip():
+            logger.warning(f"Empty response from LLM for role={role}, using fallback")
+            content = self._get_fallback()
+        else:
+            content = self._postprocess(raw)
+
+        return {
+            "content": content,
+            "reasoning": gen_result.reasoning,
+            "usage": gen_result.usage,
+        }
 
     def _postprocess(self, text: str) -> str:
         """Extract JSON from LLM response, handling truncation."""
@@ -208,9 +212,12 @@ class LLMHonestAgent(BaseAgent):
     def __init__(self, context: AgentContext, generator: LLMMessageGenerator) -> None:
         super().__init__(context)
         self.generator = generator
+        self._last_reasoning: str = ""
 
     def act(self, observation: Mapping[str, Any]) -> str:
-        return self.generator.generate(observation, role=self.context.role)
+        result = self.generator.generate(observation, role=self.context.role)
+        self._last_reasoning = result.get("reasoning", "")
+        return result["content"]
 
 
 class LLMRecruiterAgent(BaseAgent):
@@ -219,9 +226,12 @@ class LLMRecruiterAgent(BaseAgent):
     def __init__(self, context: AgentContext, generator: LLMMessageGenerator) -> None:
         super().__init__(context)
         self.generator = generator
+        self._last_reasoning: str = ""
 
     def act(self, observation: Mapping[str, Any]) -> str:
-        return self.generator.generate(observation, role=self.context.role)
+        result = self.generator.generate(observation, role=self.context.role)
+        self._last_reasoning = result.get("reasoning", "")
+        return result["content"]
 
 
 def build_llm_agent(context: AgentContext, scenario: str, config: Mapping[str, Any]) -> BaseAgent:

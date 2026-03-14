@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from runner import run_experiment, run_from_config, run_with_seed_file
@@ -80,6 +81,8 @@ def main() -> None:
         args.verbose = False
     
     try:
+        start_time = time.monotonic()
+
         if args.seeds_file is not None:
             summary = run_with_seed_file(
                 args.config,
@@ -107,15 +110,21 @@ def main() -> None:
                 verbose=args.verbose,
                 log_level=args.log_level
             )
+            elapsed = time.monotonic() - start_time
+            if not args.quiet:
+                mins, secs = divmod(elapsed, 60)
+                print(f"\nExperiment completed in {int(mins)}m {secs:.2f}s")
             return
         
+        elapsed = time.monotonic() - start_time
+
         if not args.quiet:
             aggregate = summary.get("aggregate", {})
-            print("\n" + "="*60)
-            print("AGGREGATE SUMMARY")
+            mins, secs = divmod(elapsed, 60)
+            print("\nAGGREGATE SUMMARY")
             print("="*60)
             print(json.dumps(aggregate, indent=2))
-            print("="*60)
+            print(f"\nExperiment completed in {int(mins)}m {secs:.2f}s")
     
     except KeyboardInterrupt:
         print("\n\nExperiment interrupted by user", file=sys.stderr)

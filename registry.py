@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Iterable, Tuple, Any
 
-from environments.base import EnvironmentConfig, MultiAgentEnvironment
-from environments.prisoners_dilemma import PrisonersConfig, PrisonersDilemmaEnvironment
+from environments.prisoners_dilemma.base import EnvironmentConfig, MultiAgentEnvironment
+from environments.prisoners_dilemma.prisoners_dilemma import PrisonersConfig, PrisonersDilemmaEnvironment
 
 
 _REGISTRY: Dict[str, Tuple[type[EnvironmentConfig], type[MultiAgentEnvironment]]] = {
