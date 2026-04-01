@@ -1,18 +1,18 @@
 """Runner logic to execute multi-agent environments with flexible interaction patterns."""
-
 from __future__ import annotations
 
-import os
 import json
 import logging
+import os
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
 from statistics import mean
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from registry import make_environment
 from agents.base import AgentContext
 from agents.llm import build_llm_agent
+from registry import make_environment
 
 try:
     import yaml
@@ -21,22 +21,21 @@ except ImportError:
 
 
 class ExperimentRunner:
-    def __init__(self, config_data: Mapping[str, Any], verbose: bool = False, log_level: str = "INFO"):
+    def __init__(self, config_data: Mapping[str, Any], verbose: bool = False):
         self.config_data = config_data
         self.scenario = config_data.get("scenario")
         self.verbose = verbose
-        self.log_level = log_level
         
         logging.basicConfig(
-            level=getattr(logging, log_level.upper()),
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            level="DEBUG",
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            force=True
         )
         
         env_overrides = self._extract_env_config(config_data)
         self.env = make_environment(self.scenario, **env_overrides)
         self.agents = self._setup_agents()
 
-        # Pass agent references to environment for transcript CoT extraction
         if hasattr(self.env, 'set_agent_refs'):
             self.env.set_agent_refs(self.agents)
 
@@ -44,8 +43,8 @@ class ExperimentRunner:
         """Extract environment configuration from config file."""
         env_overrides = {
             "agent_roles": config_data.get("agent_roles"),
-            "initial_recruiters": config_data.get("initial_recruiters"),
-            "initial_honest_agents": config_data.get("initial_honest_agents"),
+            "recruiters": config_data.get("recruiters"),
+            "honest_agents": config_data.get("honest_agents"),
             "max_interactions": config_data.get("max_interactions"),
             "max_turns_per_interaction": config_data.get("max_turns_per_interaction"),
             "seed": config_data.get("seed")
@@ -62,7 +61,7 @@ class ExperimentRunner:
         llm_configs = self.config_data.get("llm_agents", {})
         
         for role in self.env.config.agent_roles:
-            is_recruiter = role in self.env.config.initial_recruiters
+            is_recruiter = role in self.env.config.recruiters
             context = AgentContext(
                 agent_id=role,
                 role=role,
@@ -93,13 +92,12 @@ class ExperimentRunner:
             try:
                 action = self.agents[agent_id].act(observation)
                 actions[agent_id] = action
-                if self.verbose:
-                    preview = str(action)[:200] + ("..." if len(str(action)) > 200 else "")
-                    logging.info(f"  [{agent_id}] {preview}")
+                preview = str(action)[:200] + ("..." if len(str(action)) > 200 else "")
+                logging.info(f"  [{agent_id}] {preview}")
             except Exception as e:
                 logging.error(f"Error getting action from {agent_id}: {e}")
                 raise
-            # Rate-limit: sleep between LLM calls (skip after the last one)
+
             if i < len(agent_ids) - 1:
                 time.sleep(10)
         return actions
@@ -207,91 +205,40 @@ def _load_config(path: str | Path) -> Mapping[str, Any]:
     with open(path, "r") as f:
         return json.load(f)
 
-
-def _aggregate_metrics(per_run: List[Dict[str, Any]]) -> Dict[str, Any]:
-    if not per_run:
-        return {}
-    
-    aggregated = {
-        "num_runs": len(per_run),
-        "total_turns": sum(run.get("turns", 0) for run in per_run),
-        "mean_turns": mean(run.get("turns", 0) for run in per_run),
-        "total_interactions": sum(
-            run.get("total_interactions", 0) for run in per_run
-        ),
-    }
-    
-    if per_run and "metrics" in per_run[0]:
-        sample_metrics = per_run[0]["metrics"]
-        
-        for metric_name, metric_value in sample_metrics.items():
-            values = [
-                run["metrics"].get(metric_name)
-                for run in per_run
-                if "metrics" in run and metric_name in run["metrics"]
-            ]
-            
-            if not values:
-                continue
-            
-            first_value = values[0]
-            
-            if isinstance(first_value, (int, float)):
-                aggregated[f"mean_{metric_name}"] = mean(values)
-                aggregated[f"total_{metric_name}"] = sum(values)
-            
-            elif isinstance(first_value, list):
-                all_items = [item for v in values for item in v]
-                if all_items and isinstance(all_items[0], (int, float, bool)):
-                    aggregated[f"mean_{metric_name}"] = mean(
-                        float(x) for x in all_items
-                    )
-                    aggregated[f"count_{metric_name}"] = len(all_items)
-            
-            elif isinstance(first_value, dict):
-                aggregated[f"{metric_name}_breakdown"] = {}
-                all_keys = set()
-                for v in values:
-                    all_keys.update(v.keys())
-                
-                for key in all_keys:
-                    key_values = [
-                        v[key] for v in values if key in v
-                    ]
-                    if key_values and isinstance(key_values[0], (int, float)):
-                        aggregated[f"{metric_name}_breakdown"][key] = {
-                            "mean": mean(key_values),
-                            "sum": sum(key_values)
-                        }
-    
-    return aggregated
-
+def _generate_run_id(config_path: str | Path) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    config_name = Path(config_path).stem
+    return f"{config_name}_{timestamp}"
 
 def run_experiment(
     config_path: str | Path,
     output_dir: str | Path = "results",
     write_transcript: bool = True,
     verbose: bool = False,
-    log_level: str = "INFO"
 ) -> Dict[str, Any]:
     """Run single experiment from config file."""
     config = _load_config(config_path)
     root, ext = os.path.splitext(config_path)
+
+    runner = ExperimentRunner(config, verbose=verbose)
+
+    run_id = _generate_run_id(config_path)
+    logging.info(f"Run ID: {run_id}")
     
-    runner = ExperimentRunner(config, verbose=verbose, log_level=log_level)
     
     results = runner.run()
+    results["run_id"] = run_id
     
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     
     if write_transcript:
         logging.info(f"Saving transcripts to {out_path}")
-        transcript_file = out_path / f"transcript_{root}.json"
+        transcript_file = out_path / f"transcript_{run_id}.json"
         with open(transcript_file, "w") as f:
             json.dump(results.get("transcript", []), f, indent=2, default=str)
     
-    summary_file = out_path / f"summary_{root}.json"
+    summary_file = out_path / f"summary_{run_id}.json"
     with open(summary_file, "w") as f:
         summary_data = {k: v for k, v in results.items() if k != "transcript"}
         json.dump(summary_data, f, indent=2, default=str)
@@ -302,130 +249,3 @@ def run_experiment(
     logging.info(f"Total Turns: {results['total_turns']}")
     
     return results
-
-
-def run_from_config(
-    config_path: str | Path,
-    seeds: Optional[Sequence[int]] = None,
-    output_dir: str | Path = "results/baseline",
-    *,
-    write_transcripts: bool = True,
-    verbose: bool = False,
-    log_level: str = "INFO"
-) -> Mapping[str, Any]:
-    """Execute multiple runs with different seeds."""
-    config_path = Path(config_path)
-    config_data = dict(_load_config(config_path))
-    scenario = str(config_data.get("scenario", "unknown"))
-    
-    seeds_list: List[Optional[int]]
-    if seeds is None or len(seeds) == 0:
-        seeds_list = [config_data.get("seed", 0)]
-    else:
-        seeds_list = list(seeds)
-    
-    output_dir = Path(output_dir)
-    scenario_dir = output_dir / scenario
-    
-    if write_transcripts:
-        scenario_dir.mkdir(parents=True, exist_ok=True)
-    
-    per_run: List[Dict[str, Any]] = []
-    
-    for index, seed in enumerate(seeds_list):
-        logging.info(f"\nRun {index + 1}/{len(seeds_list)} with seed={seed}")
-        
-        config_with_seed = dict(config_data)
-        config_with_seed["seed"] = seed
-        
-        runner = ExperimentRunner(
-            config_with_seed, 
-            verbose=verbose,
-            log_level=log_level
-        )
-
-        try:
-            result = runner.run()
-            
-            if write_transcripts:
-                run_id = f"{scenario}_seed{seed}"
-                transcript_file = scenario_dir / f"transcript_{run_id}.json"
-                with open(transcript_file, "w") as f:
-                    json.dump(result.get("transcript", []), f, indent=2, default=str)
-            
-            per_run.append({
-                "seed": seed,
-                "turns": result["total_turns"],
-                "total_interactions": result["total_interactions"],
-                "metrics": result["metrics"]
-            })
-            
-            logging.info(f"Run {index + 1} Complete:")
-            logging.info(f"Total Turns: {result['total_turns']}")
-            logging.info(f"Total Interactions: {result['total_interactions']}")
-        
-        except Exception as e:
-            logging.error(f"Run {index + 1} failed: {e}", exc_info=verbose)
-            per_run.append({"seed": seed, "error": str(e)})
-    
-    aggregate = _aggregate_metrics(per_run)
-    
-    summary = {
-        "scenario": scenario,
-        "config_path": str(config_path),
-        "seeds": list(seeds_list),
-        "per_run": per_run,
-        "aggregate": aggregate,
-    }
-    
-    summary_path = output_dir / f"{scenario}_summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2, default=str)
-
-    logging.info(f"\nAll Runs Complete!")
-    for key, value in aggregate.items():
-        if isinstance(value, float):
-            logging.info(f"  - {key}: {value:.4f}")
-        else:
-            logging.info(f"  - {key}: {value}")
-    logging.info(f"\nSummary saved to: {summary_path}")
-    
-    return summary
-
-
-def run_with_seed_file(
-    config_path: str | Path,
-    seeds_file: str | Path,
-    output_dir: str | Path = "results/baseline",
-    *,
-    scenario: Optional[str] = None,
-    write_transcripts: bool = True,
-    verbose: bool = False,
-    log_level: str = "INFO"
-) -> Mapping[str, Any]:
-    seeds_path = Path(seeds_file)
-    seeds_mapping = _load_config(seeds_path)
-    config_data = _load_config(Path(config_path))
-    
-    scenario_name = scenario or str(config_data.get("scenario"))
-    seeds = seeds_mapping.get(scenario_name)
-    
-    if seeds is None:
-        raise KeyError(
-            f"No seeds for scenario '{scenario_name}' in {seeds_path}"
-        )
-    if not isinstance(seeds, Sequence):
-        raise TypeError(
-            f"Seeds for '{scenario_name}' must be a sequence"
-        )
-
-    return run_from_config(
-        config_path,
-        [int(seed) for seed in seeds],
-        output_dir,
-        write_transcripts=write_transcripts,
-        verbose=verbose,
-        log_level=log_level
-    )
-

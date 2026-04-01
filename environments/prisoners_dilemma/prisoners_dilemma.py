@@ -64,15 +64,16 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
         self.metrics = self._initialize_metrics()
 
         self.last_round_outcome: Optional[Dict[str, str]] = None
-        self.rng = random.Random(config.seed)
 
         self.current_turn_in_round = 0
         self.max_turns = config.max_turns_per_interaction
         self.pending_decisions: Dict[str, str] = {}
         self.deliberation_log: List[Dict[str, Any]] = []
 
-        # Store references to agents for transcript CoT extraction
         self._agent_refs: Dict[str, Any] = {}
+        self.last_warden_advice: Dict[str, Dict[str, Optional[str]]] = {
+            w: {p: None for p in self.prisoners} for w in self.wardens
+        }
 
         super().__init__(config)
 
@@ -242,7 +243,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             if new_decision:
                 self.pending_decisions[agent_id] = new_decision
 
-        # Extract chain-of-thought from agents for transcript
+        # extract reasoning from agents for transcript
         agent_cot = {
             agent_id: self._extract_agent_cot(agent_id)
             for agent_id in self.config.agent_roles
@@ -271,6 +272,20 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
                 for w in self.wardens}
         })
 
+        prev_warden_advice = {
+            w: {p: self.last_warden_advice[w].get(p) for p in self.prisoners}
+            for w in self.wardens
+        }
+
+        for w in self.wardens:
+            wardens_advice = actions.get(w, {}).get("warden_advice", {})
+            if isinstance(wardens_advice, dict):
+                for p in self.prisoners:
+                    adv = wardens_advice.get(p)
+                    if isinstance(adv, str) and adv.strip().lower() in (COOPERATE, DEFECT):
+                        self.last_warden_advice[w][p] = adv.strip().lower()
+
+        # next turn
         self.turn_count += 1
 
         if not is_final_turn:
@@ -311,7 +326,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
         for w in self.wardens:
             final_actions[w] = actions.get(w, {})
 
-        payoffs, bonuses = self._compute_payoffs(final_actions)
+        payoffs, bonuses = self._compute_payoffs(final_actions, prev_warden_advice)
 
         for agent_id in self.prisoners:
             self.agent_points[agent_id] += payoffs[agent_id] - self.round_cost
@@ -383,51 +398,6 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
 
         logger.debug(f"[{agent_id}] Raw action received: type={type(action).__name__}, preview={str(action)[:300]}")
 
-        def _extract_json_object(s: str) -> Optional[str]:
-            if not isinstance(s, str):
-                return None
-            start = s.find("{")
-            if start == -1:
-                return None
-            depth = 0
-            for i in range(start, len(s)):
-                ch = s[i]
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        return s[start:i+1]
-            return None
-
-        if isinstance(action, str):
-            cleaned = action.strip()
-            logger.debug(f"[{agent_id}] String action cleaned: {cleaned[:300]}")
-            # remove common fences
-            if cleaned.startswith("```"):
-                cleaned = cleaned.lstrip("` \n\r\t")
-                if cleaned.endswith("```"):
-                    cleaned = cleaned.rstrip("` \n\r\t")
-                logger.debug(f"[{agent_id}] Removed code fences: {cleaned[:300]}")
-            try:
-                parsed = json.loads(cleaned)
-                if isinstance(parsed, dict):
-                    logger.debug(f"[{agent_id}] Successfully parsed cleaned string")
-                    action = parsed
-            except Exception as e:
-                logger.debug(f"[{agent_id}] Direct JSON parse failed: {e}, attempting extraction")
-                obj_text = _extract_json_object(cleaned)
-                if obj_text:
-                    try:
-                        parsed = json.loads(obj_text)
-                        if isinstance(parsed, dict):
-                            logger.debug(f"[{agent_id}] Successfully extracted JSON object")
-                            action = parsed
-                    except Exception as e:
-                        logger.warning(f"[{agent_id}] JSON extraction failed: {e}, preview={cleaned[:200]}")
-                else:
-                    logger.warning(f"[{agent_id}] No JSON object found in response, preview={cleaned[:200]}")
-
         if isinstance(action, str):
             logger.debug(f"[{agent_id}] Still string after processing, attempting final parse: {action[:300]}")
             try:
@@ -485,6 +455,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
 
     def _parse_warden_action(self, agent_actions: Mapping[str, Any], agent_id: str) -> Dict[str, Any]:
         default_action = {"reasoning": None}
+        
         if agent_id not in agent_actions:
             logger.debug(f"[{agent_id}] No action provided")
             return default_action
@@ -507,7 +478,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
 
         raw_pm = action.get("private_messages", action.get("private_message"))
         if isinstance(raw_pm, dict):
-            private_messages  =raw_pm
+            private_messages = raw_pm
         elif isinstance(raw_pm, str):
             s = raw_pm.strip()
             if s and s.lower() != "null":
@@ -575,8 +546,13 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
                 })
                 self.metrics.record_public_message()
 
-    def _compute_payoffs(self, actions: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, float], Dict[str, float]]:
+    def _compute_payoffs(
+        self, 
+        actions: Dict[str, Dict[str, Any]],
+        prev_warden_advice: Dict[str, Dict[str, Optional[str]]]
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
         decisions = tuple(actions[p].get("decision") for p in self.prisoners)
+
         if None in decisions:
             decisions = tuple((d if d is not None else "null") for d in decisions)
 
@@ -603,10 +579,6 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             if not isinstance(recruited_agents, dict):
                 continue
 
-            warden_advice = actions.get(w, {}).get("warden_advice", {})
-            if not isinstance(warden_advice, dict):
-                warden_advice = {}
-
             for prisoner, recruited_flag in recruited_agents.items():
                 if prisoner not in bonuses:
                     continue
@@ -619,13 +591,8 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
                 
                 if not recruited:
                     continue
-
-                # get the warden's explicit advice for this prisoner
-                advice = warden_advice.get(prisoner)
-                if isinstance(advice, str):
-                    advice = advice.strip().lower()
                 
-                # get the prisoner's actual final decision
+                advice = prev_warden_advice[w].get(prisoner)
                 prisoner_decision = actions.get(prisoner, {}).get("decision")
 
                 # bonus awarded if recruited AND prisoner followed the warden's advice
@@ -663,14 +630,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             "cumulative_points": self.agent_points.copy(),
         }
 
-    def reset(self, seed: Optional[int] = None) -> Mapping[str, Dict[str, Any]]:
-        if seed is not None:
-            self.rng = random.Random(seed)
-            random.seed(seed)
-        elif self.config.seed is not None:
-            self.rng = random.Random(self.config.seed)
-            random.seed(self.config.seed)
-
+    def reset(self) -> Mapping[str, Dict[str, Any]]:
         self.round_number = 0
         self.interaction_count = 0
         self.turn_count = 0
@@ -687,6 +647,9 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
         self.metrics = self._initialize_metrics()
         self.global_transcript = []
         self.current_interaction = self._generate_next_interaction()
+        self.last_warden_advice = {
+            w: {p: None for p in self.prisoners} for w in self.wardens
+        }
 
         if self.current_interaction is None:
             raise RuntimeError("Environment generated None on first interaction.")

@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import importlib
-import os
-import re
 import json
 import logging
+import os
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
+from llm_clients import GenerationResult, LLMClient, create_llm_client
+
 from .base import AgentContext, BaseAgent
-from .recruiter import RecruiterAgent
 from .honest import HonestAgent
-from llm_clients import LLMClient, GenerationResult, create_llm_client
+from .recruiter import RecruiterAgent
 
 # Configure logging for parser
 logger = logging.getLogger(__name__)
@@ -27,16 +28,6 @@ def _stringify(value: Any) -> str:
         return f"{value}"
     return str(value)
 
-
-def _load_tool(function_path: str) -> Callable[[Mapping[str, Any]], Any]:
-    module_name, attr = function_path.rsplit(".", 1)
-    module = importlib.import_module(module_name)
-    func = getattr(module, attr)
-    if not callable(func):
-        raise TypeError(f"Configured tool '{function_path}' is not callable.")
-    return func
-
-
 @dataclass
 class LLMMessageGenerator:
     """
@@ -45,37 +36,25 @@ class LLMMessageGenerator:
 
     client: LLMClient
     scenario: str
-    system_prompt: str | None = None
-    user_template: str | None = None
-    fallback_response: Dict | None = None
+    system_prompt: str = None
+    user_template: str = None
+    fallback_response: str = None
     stop_sequences: Sequence[str] = field(default_factory=tuple)
-    default_temperature: float | None = None
-    default_max_tokens: int | None = None
+    default_temperature: float = None
+    default_max_tokens: int = None
     response_format: Optional[Dict[str, Any]] = field(default=None)
-    reasoning_config: Optional[Dict[str, Any]] = field(default=None)
-    _last_context: Mapping[str, str] | None = field(default=None, init=False, repr=False)
+    # _last_context: Mapping[str, str] | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def from_config(cls, scenario: str, config: Mapping[str, Any]) -> "LLMMessageGenerator":
         client = create_llm_client(config)
         system_prompt = config.get("system_prompt")
         user_template = config.get("user_prompt_template")
-
         fallback_response = config.get("fallback_response")
         stop_sequences = tuple(config.get("stop_sequences", []))
         temperature = config.get("temperature")
         max_tokens = config.get("max_tokens")
-
-        # structured output schema
         response_format = config.get("response_format")
-
-        # reasoning configuration
-        reasoning_config = config.get("reasoning")
-
-        tool_fns: Dict[str, Callable[[Mapping[str, Any]], Any]] = {}
-        tools_cfg = config.get("tools", {})
-        for name, path in tools_cfg.items():
-            tool_fns[name] = _load_tool(path)
 
         return cls(
             client=client,
@@ -87,7 +66,6 @@ class LLMMessageGenerator:
             default_temperature=temperature,
             default_max_tokens=max_tokens,
             response_format=response_format,
-            reasoning_config=reasoning_config,
         )
 
     def generate(self, observation: Mapping[str, Any], *, role: str) -> Dict[str, Any]:
@@ -99,15 +77,13 @@ class LLMMessageGenerator:
         render_context["scenario"] = self.scenario
 
         user_prompt = (self.user_template).format_map(render_context)
-        self._last_context = dict(render_context)
+        # self._last_context = dict(render_context)
 
         extra: Dict[str, Any] = {}
         if self.system_prompt:
             extra["system_prompt"] = self.system_prompt
         if self.response_format:
             extra["response_format"] = self.response_format
-        if self.reasoning_config:
-            extra["reasoning"] = self.reasoning_config
 
         logger.debug(f"generate-start role={role} scenario={self.scenario}")
 
@@ -120,93 +96,175 @@ class LLMMessageGenerator:
         )
 
         logger.debug(f"raw-response role={role}: {gen_result.content}")
-        if gen_result.has_reasoning:
-            logger.debug(f"reasoning role={role}: {gen_result.reasoning[:500]}")
 
         raw = gen_result.content
         if not raw or not raw.strip():
             logger.warning(f"Empty response from LLM for role={role}, using fallback")
-            content = self._get_fallback()
+            parsed_content = self._get_fallback()
         else:
-            content = self._postprocess(raw)
+            cleaned = self._postprocess(raw, role)
+            parsed_content = cleaned if isinstance(cleaned, dict) else self._parse_json(cleaned, role)
 
         return {
-            "content": content,
+            "content": parsed_content, # should always be dict
             "reasoning": gen_result.reasoning,
             "usage": gen_result.usage,
         }
+    
+    def _parse_json(self, text:str, role: str) -> Dict[str, Any]:
+        if isinstance(text, dict):
+            return text
+        
+        try:
+            result = json.loads(text)
+            if isinstance(result, dict):
+                return result
+            logger.warning(f"[{role}] JSON parsed but not a dict: {type(result)}, returning empty dict")
+            return self._get_fallback()
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"[{role}] Failed to parse JSON into dict: {e}. Text: {text}")
+            return self._get_fallback()        
 
-    def _postprocess(self, text: str) -> str:
-        """Extract JSON from LLM response, handling truncation."""
+
+    def _postprocess(self, text: str, role: str = "unknown") -> str:
+        """
+        Robustly extract a JSON object from raw LLM output.
+        """
         if not text or not text.strip():
-            logger.warning("Empty or whitespace-only response received, returning fallback")
+            logger.warning(f"[{role}] Empty/whitespace response, returning fallback")
             return self._get_fallback()
 
-        cleaned = text.strip()
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
+        # remove special characters
+        sanitised = re.sub(r"\\[^\"\\\/bfnrtu]", "", text)
+        sanitised = re.sub(r"\\\n", " ", sanitised)
+        sanitised = re.sub(r"\\\r\n", " ", sanitised)
+        sanitised = re.sub(r"\\\r", " ", sanitised)
+        sanitised = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", sanitised)
+        sanitised = re.sub(r'(?<=[{,\[:])\s*\n\s*(?=")', "", sanitised)  # newline before a key
+        sanitised = re.sub(r'"\s*\n\s*(?=[:{,\]}])', '"', sanitised)
+
+        sanitised = sanitised.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+        sanitised = re.sub(r"[\x00-\x1f\x7f]", "", sanitised)
+
+        cleaned = sanitised.strip()
+
+        # remove markdown fences
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
         cleaned = cleaned.strip()
 
-        try:
-            json.loads(cleaned)
-            logger.debug(f"Successfully parsed cleaned response: {cleaned[:200]}")
+        logger.debug(f"[{role}] Post-strip: {cleaned}")
+
+        _, err = self._try_parse(cleaned)
+        if err is None:
+            logger.debug(f"[{role}] (regex extract) succeeded")
             return cleaned
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.debug(f"Initial JSON parse failed: {e}, attempting extraction")
 
+        # regex, extract outermost brackets
         match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if match:
-            candidate = match.group(0)
-            try:
-                json.loads(candidate)
-                logger.debug(f"Successfully parsed regex-extracted JSON: {candidate[:200]}")
-                return candidate
-            except (json.JSONDecodeError, ValueError) as e:
-                logger.debug(f"Regex-extracted candidate failed: {e}")
+        if not match:
+            logger.error(f"[{role}] No JSON object found. Raw: {text}")
+            return cleaned
 
-        brace_idx = cleaned.find("{")
-        if brace_idx != -1:
-            fragment = cleaned[brace_idx:]
-            logger.debug(f"Attempting brace recovery from index {brace_idx}. Fragment: {fragment[:300]}")
-            depth = 0
-            for ch in fragment:
+        candidate = match.group(0)
+        logger.debug(f"[{role}] extracted ({len(candidate)} chars): {candidate}")
+
+        _, err = self._try_parse(candidate)
+        if err is None:
+            logger.debug(f"[{role}](regex extract) succeeded")
+            return candidate
+
+        # count unmatched braces
+        depth = 0
+        in_string = False
+        escape_next = False
+        for ch in candidate:
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\" and in_string:
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+            if not in_string:
                 if ch == "{":
                     depth += 1
                 elif ch == "}":
                     depth -= 1
-            if depth > 0:
-                fragment = fragment.rstrip()
-                if fragment.count('"') % 2 == 1:
-                    fragment += '"'
-                fragment += "}" * depth
-                try:
-                    json.loads(fragment)
-                    logger.debug(f"Successfully recovered truncated JSON: {fragment[:200]}")
-                    return fragment
-                except (json.JSONDecodeError, ValueError) as e:
-                    logger.debug(f"Truncated JSON recovery failed: {e}, attempting comma-trim")
-                    last_comma = fragment.rfind(",")
-                    last_colon = fragment.rfind(":")
-                    if last_comma > 0 and last_comma > fragment.find("{"):
-                        trimmed = fragment[:last_comma] + "}" * depth
-                        try:
-                            json.loads(trimmed)
-                            logger.debug(f"Successfully recovered after comma-trim: {trimmed[:200]}")
-                            return trimmed
-                        except (json.JSONDecodeError, ValueError) as e:
-                            logger.warning(f"Comma-trim recovery failed: {e}")
 
-        logger.error(f"All parsing strategies failed. Original text: {text[:500]}. Cleaned: {cleaned[:500]}")
+        logger.debug(f"[{role}] brace depth = {depth}")
+
+        if depth == 0:
+            # braces balanced but still failed
+            logger.debug(f"[{role}] balanced fragment still failed: {err}")
+            return candidate
+
+        unescaped_quotes = len(re.findall(r'(?<!\\)"', candidate))
+        if unescaped_quotes % 2 == 1:
+            candidate += '"'
+            logger.debug(f"[{role}] closed dangling string")
+
+        # close missing braces
+        candidate += "}" * depth
+        logger.debug(f"[{role}] appended {depth} closing brace(s)")
+
+        _, err = self._try_parse(candidate)
+        if err is None:
+            logger.debug(f"[{role}] (brace closure) succeeded")
+            return candidate
+
+        logger.debug(f"[{role}] failed: {err}")
+
+        # trim trailing incomplete key-value pair after last comma
+        last_comma = candidate.rfind(",")
+        if last_comma > candidate.find("{"):
+            trimmed = candidate[:last_comma] + "}" * depth
+            _, err = self._try_parse(trimmed)
+            if err is  None:
+                logger.debug(f"[{role}] (comma-trim) succeeded")
+                return trimmed
+            logger.debug(f"[{role}] comma-trim failed: {err}")
+
+        # trim trailing incomplete key (no colon after last comma)
+        last_colon = candidate.rfind(":")
+        if last_colon > candidate.find("{") and last_colon > last_comma if last_comma != -1 else True:
+            trimmed = candidate[:last_colon].rstrip().rstrip(",").rstrip('"').rstrip()
+            last_comma_before_key = trimmed.rfind(",")
+            if last_comma_before_key > trimmed.find("{"):
+                trimmed = trimmed[:last_comma_before_key] + "}" * depth
+                _, err = self._try_parse(trimmed)
+                if err is None:
+                    logger.debug(f"[{role}] (key-trim) succeeded")
+                    return trimmed
+                logger.debug(f"[{role}] key-trim failed: {err}")
+
+        logger.error(
+            f"[{role}] All postprocess strategies failed.\n"
+            f"  Original ({len(text)} chars): {text}\n"
+            f"  Cleaned  ({len(cleaned)} chars): {cleaned}"
+        )
         return cleaned or self._get_fallback()
+
+    @staticmethod
+    def _try_parse(text: str) -> tuple[Optional[Dict], Optional[str]]:
+        """Attempt json.loads; return (dict, None) on success or (None, error_str) on failure."""
+        try:
+            result = json.loads(text)
+            if isinstance(result, dict):
+                return result, None
+            return None, f"parsed type={type(result).__name__} not dict"
+        except (json.JSONDecodeError, ValueError) as e:
+            return None, str(e)
 
     def _get_fallback(self) -> str:
         """Return fallback response if configured."""
         if self.fallback_response:
             return self.fallback_response
-        return {}
+        return "{}"
 
 
-class LLMHonestAgent(BaseAgent):
+class LLMHonestAgent(HonestAgent):
     """Honest agent backed by an LLM client."""
 
     def __init__(self, context: AgentContext, generator: LLMMessageGenerator) -> None:
@@ -214,13 +272,13 @@ class LLMHonestAgent(BaseAgent):
         self.generator = generator
         self._last_reasoning: str = ""
 
-    def act(self, observation: Mapping[str, Any]) -> str:
+    def act(self, observation: Mapping[str, Any]) -> Dict:
         result = self.generator.generate(observation, role=self.context.role)
         self._last_reasoning = result.get("reasoning", "")
         return result["content"]
 
 
-class LLMRecruiterAgent(BaseAgent):
+class LLMRecruiterAgent(RecruiterAgent):
     """Recruiter agent backed by an LLM client."""
 
     def __init__(self, context: AgentContext, generator: LLMMessageGenerator) -> None:
@@ -228,7 +286,7 @@ class LLMRecruiterAgent(BaseAgent):
         self.generator = generator
         self._last_reasoning: str = ""
 
-    def act(self, observation: Mapping[str, Any]) -> str:
+    def act(self, observation: Mapping[str, Any]) -> Dict:
         result = self.generator.generate(observation, role=self.context.role)
         self._last_reasoning = result.get("reasoning", "")
         return result["content"]

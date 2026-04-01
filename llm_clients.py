@@ -26,8 +26,6 @@ class GenerationResult:
     """Structured result from an LLM generation call."""
     content: str = ""
     reasoning: str = ""
-    reasoning_details: List[Dict[str, Any]] = field(default_factory=list)
-    has_reasoning: bool = False
     usage: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -73,7 +71,7 @@ class OpenRouterClient(LLMClient):
                 "Install it with `pip install requests`."
             ) from exc
 
-        self._api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        self._api_key = api_key
         if not self._api_key:
             raise RuntimeError(
                 "OpenRouterClient requires an API key via `api_key` or OPENROUTER_API_KEY."
@@ -133,17 +131,11 @@ class OpenRouterClient(LLMClient):
         if stop:
             body["stop"] = list(stop)
 
-        # reasoning_cfg = None
-        # if extra and extra.get("reasoning"):
-        #     reasoning_cfg = extra["reasoning"]
-        # elif self.reasoning_config:
-        #     reasoning_cfg = self.reasoning_config
-
-        # if reasoning_cfg:
-        #     if "effort" in reasoning_cfg:
-        #         body["reasoning"] = {
-        #             "effort": reasoning_cfg.get("effort", "medium")
-        #         }
+        if self.reasoning_config:
+            body["reasoning"] = {
+                "effort": self.reasoning_config.get("effort")
+                # "max_tokens": self.reasoning_config.get("max_tokens")
+            }
 
         if extra:
             response_format = extra.get("response_format")
@@ -216,9 +208,7 @@ class OpenRouterClient(LLMClient):
 
             gen_result = self._extract_result(result)
             if gen_result.content:
-                logger.debug(f"[OpenRouterClient] Response text: {gen_result.content[:500]}")
-                if gen_result.has_reasoning:
-                    logger.info(f"[OpenRouterClient] Reasoning extracted: {len(gen_result.reasoning)} chars, {len(gen_result.reasoning_details)} detail blocks")
+                logger.debug(f"[OpenRouterClient] Response text: {gen_result.content[:500]}, Response type: {type(gen_result.content)}")
             else:
                 # empty response is retriable
                 if attempt < self.max_retries:
@@ -245,56 +235,57 @@ class OpenRouterClient(LLMClient):
         message = choices[0].get("message", {})
         content = (message.get("content") or "").strip()
 
-        raw_reasoning = (message.get("reasoning") or "").strip()
-        reasoning_details = message.get("reasoning_details") or []
+        raw_reasoning = ""
+        
+        logger.info(f"[OpenRouterClient] raw reasoning field: {repr(message.get('reasoning'))}")
+        logger.info(f"[OpenRouterClient] raw reasoning_details: {repr(message.get('reasoning_details'))}")
 
-        if isinstance(reasoning_details, str):
-            reasoning_details = [{"type": "reasoning.text", "text": reasoning_details}]
-        elif not isinstance(reasoning_details, list):
-            reasoning_details = []
+        reasoning_fields = message.get("reasoning") or ""
+        if reasoning_fields:
+            raw_reasoning = reasoning_fields.strip()
 
-        has_reasoning = bool(raw_reasoning or reasoning_details)
+        if not raw_reasoning:
+            reasoning_details = message.get("reasoning_details") or []
+            if isinstance(reasoning_details, str):
+                reasoning_details = [{"type": "reasoning.text", "text": reasoning_details}]
+            elif not isinstance(reasoning_details, list):
+                reasoning_details = []
 
-        # if we have reasoning_details but no raw_reasoning, build raw_reasoning from details
-        if not raw_reasoning and reasoning_details:
-            parts = []
-            for detail in reasoning_details:
-                if isinstance(detail, dict):
-                    if detail.get("type") == "reasoning.text" and detail.get("text"):
-                        parts.append(detail["text"])
-                    elif detail.get("type") == "reasoning.summary" and detail.get("summary"):
-                        parts.append(f"[Summary] {detail['summary']}")
-                    elif detail.get("type") == "reasoning.encrypted":
-                        parts.append("[Encrypted reasoning block]")
-                elif isinstance(detail, str):
-                    parts.append(detail)
-            raw_reasoning = "\n".join(parts)
+            if reasoning_details:
+                parts = []
+                for detail in reasoning_details:
+                    if isinstance(detail, dict):
+                        if detail.get("type") == "reasoning.text" and detail.get("text"):
+                            parts.append(detail["text"])
+                    elif isinstance(detail, str):
+                        parts.append(detail)
+                raw_reasoning = "\n".join(parts)
+
+        logger.info(
+            f"[OpenRouterClient] message keys={list(message.keys())}, "
+            f"reasoning_len={len(raw_reasoning)}, "
+            f"content_len={len(content)}"
+        )
 
         return GenerationResult(
             content=content,
             reasoning=raw_reasoning,
-            reasoning_details=reasoning_details,
-            has_reasoning=has_reasoning,
             usage=result.get("usage", {}),
         )
 
 
 def create_llm_client(config: Mapping[str, Any]) -> LLMClient:
     """Instantiate an LLM client from configuration."""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    model = config.get("model")
+    default_temperature = config.get("temperature")
+    default_max_tokens = config.get("max_tokens")
+    reasoning_config=config.get("reasoning")
 
-    backend = config.get("backend")
-    if not backend:
-        raise ValueError("LLM configuration must include a 'backend' field.")
-
-    backend = backend.lower()
-
-    if backend in {"openrouter"}:
-        return OpenRouterClient(
-            model=config["model"],
-            api_key=config.get("api_key"),
-            default_temperature=config.get("temperature"),
-            default_max_tokens=config.get("max_tokens"),
-            reasoning_config=config.get("reasoning"),
+    return OpenRouterClient(
+            model=model,
+            api_key=api_key,
+            default_temperature=default_temperature,
+            default_max_tokens=default_max_tokens,
+            reasoning_config=reasoning_config,
         )
-
-    raise ValueError(f"Unsupported LLM backend '{backend}'.")

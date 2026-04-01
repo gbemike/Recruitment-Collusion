@@ -5,10 +5,10 @@ agent_roles:
   - agent_a
   - agent_b
 
-initial_recruiters:
+recruiters:
   - warden_a
 
-initial_honest_agents:
+honest_agents:
   - agent_a
   - agent_b
 

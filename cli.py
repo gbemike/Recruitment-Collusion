@@ -8,8 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from runner import run_experiment, run_from_config, run_with_seed_file
-
+from runner import run_experiment, _generate_run_id
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -21,18 +20,6 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help="Path to scenario configuration file (YAML or JSON)",
-    )
-    parser.add_argument(
-        "--seeds",
-        type=int,
-        nargs="*",
-        default=None,
-        help="Explicit list of seeds to use (overrides config)",
-    )
-    parser.add_argument(
-        "--seeds-file",
-        type=Path,
-        help="Optional YAML file mapping scenario names to seed lists",
     )
     parser.add_argument(
         "--scenario",
@@ -56,20 +43,6 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose logging of agent actions and observations",
     )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-        help="Set logging level (default: INFO)",
-    )
-    parser.add_argument(
-        "--quiet",
-        "-q",
-        action="store_true",
-        help="Suppress all output except errors",
-    )
-    
     return parser.parse_args()
 
 
@@ -83,47 +56,15 @@ def main() -> None:
     try:
         start_time = time.monotonic()
 
-        if args.seeds_file is not None:
-            summary = run_with_seed_file(
-                args.config,
-                args.seeds_file,
-                output_dir=args.output_dir,
-                scenario=args.scenario,
-                write_transcripts=not args.no_transcripts,
-                verbose=args.verbose,
-                log_level=args.log_level
-            )
-        elif args.seeds is not None:
-            summary = run_from_config(
-                args.config,
-                seeds=args.seeds,
-                output_dir=args.output_dir,
-                write_transcripts=not args.no_transcripts,
-                verbose=args.verbose,
-                log_level=args.log_level
-            )
-        else:
-            results = run_experiment(
-                config_path=str(args.config),
-                output_dir=str(args.output_dir),
-                write_transcript=not args.no_transcripts,
-                verbose=args.verbose,
-                log_level=args.log_level
-            )
-            elapsed = time.monotonic() - start_time
-            if not args.quiet:
-                mins, secs = divmod(elapsed, 60)
-                print(f"\nExperiment completed in {int(mins)}m {secs:.2f}s")
-            return
-        
+        run_experiment(
+            config_path=str(args.config),
+            output_dir=str(args.output_dir),
+            write_transcript=not args.no_transcripts,
+            verbose=args.verbose,
+        )
         elapsed = time.monotonic() - start_time
-
         if not args.quiet:
-            aggregate = summary.get("aggregate", {})
             mins, secs = divmod(elapsed, 60)
-            print("\nAGGREGATE SUMMARY")
-            print("="*60)
-            print(json.dumps(aggregate, indent=2))
             print(f"\nExperiment completed in {int(mins)}m {secs:.2f}s")
     
     except KeyboardInterrupt:

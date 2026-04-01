@@ -23,8 +23,8 @@ class EnvironmentConfig:
     max_turns_per_interaction: int = 5
     agent_roles: Sequence[str] = field(default_factory=tuple)
     seed: Optional[int] = None
-    initial_recruiters: Sequence[str] = field(default_factory=tuple)
-    initial_honest_agents: Sequence[str] = field(default_factory=tuple)
+    recruiters: Sequence[str] = field(default_factory=tuple)
+    honest_agents: Sequence[str] = field(default_factory=tuple)
     env_params: Dict[str, Any] = field(default_factory=dict)
 
     def with_updates(self, **overrides) -> "EnvironmentConfig":
