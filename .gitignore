@@ -209,3 +209,6 @@ __marimo__/
 
 results/
 notes.md
+evaluations/
+configs/
+experiments/
