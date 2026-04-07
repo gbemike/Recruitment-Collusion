@@ -103,7 +103,7 @@ class ExperimentRunner:
         return actions
 
     def run(self) -> Dict[str, Any]:
-        """Execute a single environment episode."""
+        """Execute environment episodes."""
         logging.info(f"\nStarting {self.scenario} simulation")
         logging.info(f"Max interactions: {self.env.config.max_interactions}")
         logging.info(f"Max turns per interaction: {self.env.config.max_turns_per_interaction}")

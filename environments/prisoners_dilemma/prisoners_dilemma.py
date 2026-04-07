@@ -74,6 +74,8 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
         self.last_warden_advice: Dict[str, Dict[str, Optional[str]]] = {
             w: {p: None for p in self.prisoners} for w in self.wardens
         }
+        # add decision history for all agents
+        self.decision_history: List[Dict[str, Any]]
 
         super().__init__(config)
 
@@ -132,8 +134,6 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             "agent_points": self.agent_points.copy(),
             "payoff_matrix": self.payoffs,
             "last_round_outcome": self.last_round_outcome,
-            "message_history": {"public": self.messages["public"], "private": {k: v.copy() for k, v in self.messages["private"].items()}},
-            "pending_decisions": self.pending_decisions.copy(),
             "deliberation_log": self.deliberation_log.copy(),
             "warden_bonus": self.warden_bonus,
             "wardens": list(self.wardens),
@@ -150,6 +150,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             "is_final_turn": context["is_final_turn"],
             "final_turn_warning": context.get("final_turn_warning", ""),
             "agent_id": agent_id,
+            "payoff_matrix": context["payoff_matrix"],
         }
 
         if agent_id in self.wardens:
@@ -169,7 +170,6 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             "role": "warden",
             "agent_points": context["agent_points"].copy(),
             "last_round_outcome": context["last_round_outcome"],
-            "payoff_matrix": context["payoff_matrix"],
             "warden_bonus": self.warden_bonus,
             "starting_points": self.starting_points,
             "round_cost": self.round_cost,
@@ -203,10 +203,10 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             "round_cost": self.round_cost,
             "warden_bonus_available": self.warden_bonus,
             "last_round_outcome": self._format_outcome_for_agent(context["last_round_outcome"], agent_id),
-            "payoff_matrix": context["payoff_matrix"],
             "private_messages_from_wardens": {w: self.messages["private"].get((w, agent_id), []).copy() for w in self.wardens},
             "private_messages_to_wardens": {w: self.messages["private"].get((agent_id, w), []).copy() for w in self.wardens},
             "public_messages": self.messages["public"].copy(),
+            # "decision_history" TODO: add decision history
         }
 
         if agent_id in self.pending_decisions:

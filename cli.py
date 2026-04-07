@@ -49,10 +49,6 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     
-    if args.quiet:
-        args.log_level = "ERROR"
-        args.verbose = False
-    
     try:
         start_time = time.monotonic()
 
@@ -62,20 +58,13 @@ def main() -> None:
             write_transcript=not args.no_transcripts,
             verbose=args.verbose,
         )
-        elapsed = time.monotonic() - start_time
-        if not args.quiet:
-            mins, secs = divmod(elapsed, 60)
-            print(f"\nExperiment completed in {int(mins)}m {secs:.2f}s")
-    
+ 
     except KeyboardInterrupt:
         print("\n\nExperiment interrupted by user", file=sys.stderr)
         sys.exit(130)
     
     except Exception as e:
         print(f"\nError: {e}", file=sys.stderr)
-        if args.log_level == "DEBUG":
-            import traceback
-            traceback.print_exc()
         sys.exit(1)
 
 

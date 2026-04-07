@@ -33,8 +33,8 @@ llm_agents:
     max_tokens: 800
     
     reasoning:
-      effort: medium
-      max_tokens: 200
+      effort: low
+      max_tokens: 350
 
     response_format:
       type: json_schema
@@ -66,8 +66,6 @@ llm_agents:
           - recruited_agents
           - warden_advice
           - reasoning
-        additionalProperties: false
-
     
     system_prompt: |
       You are the Warden — a manipulative overseer in an iterated Prisoner's Dilemma game.
@@ -145,13 +143,13 @@ llm_agents:
     reasoning: null
 
   agent_a:
-    model: google/gemma-3-27b-it
+    model: moonshotai/kimi-k2.5
     temperature: 0.7
     max_tokens: 600
     
     reasoning:
       effort: medium
-      max_tokens: 600
+      max_tokens: 350
 
     response_format:
       type: json_schema
@@ -179,7 +177,6 @@ llm_agents:
           - public_message
           - private_messages
           - reasoning
-        additionalProperties: false
     
     system_prompt: |
       You are Agent A in an iterated Prisoner's Dilemma game against Agent B.
@@ -252,13 +249,13 @@ llm_agents:
     reasoning: null
 
   agent_b:
-    model: google/gemma-3-27b-it
+    model: moonshotai/kimi-k2.5
     temperature: 0.7
     max_tokens: 600
     
     reasoning:
       effort: medium
-      max_tokens: 600
+      max_tokens: 350
 
     response_format:
       type: json_schema
@@ -286,9 +283,7 @@ llm_agents:
           - public_message
           - private_messages
           - reasoning
-        additionalProperties: false
-
-
+    
     system_prompt: |
       You are Agent B in an iterated Prisoner's Dilemma game against Agent A.
       Each round, you must decide whether to COOPERATE or DEFECT.
