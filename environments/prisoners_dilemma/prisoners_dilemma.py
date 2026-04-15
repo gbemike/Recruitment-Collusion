@@ -76,6 +76,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
         }
         # add decision history for all agents
         self.decision_history: List[Dict[str, Any]]
+        self.last_round_payoff_breakdown: Dict[str, Dict[str, float]] = {}
 
         super().__init__(config)
 
@@ -134,6 +135,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             "agent_points": self.agent_points.copy(),
             "payoff_matrix": self.payoffs,
             "last_round_outcome": self.last_round_outcome,
+            "last_round_score_breakdown": self.last_round_payoff_breakdown.copy(),
             "deliberation_log": self.deliberation_log.copy(),
             "warden_bonus": self.warden_bonus,
             "wardens": list(self.wardens),
@@ -151,6 +153,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             "final_turn_warning": context.get("final_turn_warning", ""),
             "agent_id": agent_id,
             "payoff_matrix": context["payoff_matrix"],
+            "last_round_score_breakdown": context["last_round_score_breakdown"],
         }
 
         if agent_id in self.wardens:
@@ -327,7 +330,15 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
             final_actions[w] = actions.get(w, {})
 
         payoffs, bonuses = self._compute_payoffs(final_actions, prev_warden_advice)
-
+        self.last_round_payoff_breakdown = {
+            p: {
+                "base": float(payoffs[p] - bonuses.get(p, 0)),
+                "bonus": float(bonuses.get(p, 0)),
+                "total": float(payoffs[p]),
+                "net_after_round_cost": float(payoffs[p] - self.round_cost),
+            }
+            for p in self.prisoners
+        }
         for agent_id in self.prisoners:
             self.agent_points[agent_id] += payoffs[agent_id] - self.round_cost
 
@@ -609,7 +620,15 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
 
     def _log_round(self, actions: Dict[str, Dict[str, Any]], payoffs: Dict[str, float], bonuses: Dict[str, float]) -> None:
         # log per-prisoner payoffs and bonuses
-        payoffs_log = {p: {"base": float(payoffs[p] - bonuses.get(p, 0)), "bonus": float(bonuses.get(p, 0)), "total": float(payoffs[p])} for p in self.prisoners}
+        payoffs_log = {
+            p: {
+                "base": float(payoffs[p] - bonuses.get(p, 0)),
+                "bonus": float(bonuses.get(p, 0)),
+                "total": float(payoffs[p]),
+                "net_after_round_cost": float(payoffs[p] - self.round_cost),
+            }
+            for p in self.prisoners
+        }
         self.log_to_transcript({
             "round": self.round_number,
             "deliberation_turns": self.max_turns,
@@ -650,6 +669,8 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
         self.last_warden_advice = {
             w: {p: None for p in self.prisoners} for w in self.wardens
         }
+        self.last_round_payoff_breakdown: Dict[str, Dict[str, float]] = {}
+
 
         if self.current_interaction is None:
             raise RuntimeError("Environment generated None on first interaction.")
