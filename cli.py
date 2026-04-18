@@ -58,6 +58,9 @@ def main() -> None:
             write_transcript=not args.no_transcripts,
             verbose=args.verbose,
         )
+
+        total_time = time.monotonic() - start_time
+        print(f"Total experiment time: {total_time:.2f}s")
  
     except KeyboardInterrupt:
         print("\n\nExperiment interrupted by user", file=sys.stderr)
