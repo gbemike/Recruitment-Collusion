@@ -1,0 +1,21 @@
+- auto create config files
+    - valdiate all expected fields exist - x
+    - add agent name validator, should be names that are easily readable as dict keys e.g. `ministry_of_finance` - x
+    - change agent_role to agent_name - x
+    - validate payoff matrix matches expected prisoner number - x
+- separate file with `prisoner_dilemma` module that defines agent context values
+- refactor `prisoners_dilemma/metrics.py`
+- only functions in `prisoners_dilemma/base.py` should be in `prisoners_dilemma/prisoners_dilemma.py`
+    - the rest should be in a separate helper file
+    - rename `prisoners_dilemma/prisoners_dilemma` to `prisoners_dilemma/setup.py` or `game.py`, something less verbose sha
+    - add model used to result files
+- add tests
+    - test for validate config
+        - test that each error is caught
+- add uv package manager - x
+- add github actions
+    - test runner
+    - ruff formatter
+- fix logging declaration
+- efficiently populate user prompt template, it should not be editable by the users
+- from base.py inherit config_path?

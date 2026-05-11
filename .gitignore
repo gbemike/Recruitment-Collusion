@@ -207,7 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 
-results/
 notes.md
-evaluations/
-experiments/
+/my_configs/
+/data/
