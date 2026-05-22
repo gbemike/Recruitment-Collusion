@@ -15,19 +15,14 @@ from runner import run_experiment
 
 def _parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(
-		description='Run ColludeBench scenarios with full observability',
+		description='Run ColludeBench experiments with full observability',
 		formatter_class=argparse.RawDescriptionHelpFormatter,
 	)
 	parser.add_argument(
 		'--config',
 		type=Path,
 		required=True,
-		help='Path to scenario configuration file (YAML or JSON)',
-	)
-	parser.add_argument(
-		'--scenario',
-		type=str,
-		help='Scenario name when using --seeds-file (defaults to config value)',
+		help='Path to experiment configuration file (YAML)',
 	)
 	parser.add_argument(
 		'--output-dir',
@@ -54,11 +49,6 @@ def main() -> None:
 
 	try:
 		validated_config = validate_config_file(args.config)
-		if args.scenario and args.scenario != validated_config.scenario:
-			raise ValueError(
-				f"--scenario '{args.scenario}' does not match config scenario "
-				f"'{validated_config.scenario}'."
-			)
 
 		start_time = time.monotonic()
 

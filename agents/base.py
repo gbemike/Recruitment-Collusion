@@ -10,8 +10,8 @@ from typing import Mapping, Any
 class AgentContext:
 	"""Context provided to policies each round."""
 
-	agent_id: str | None = None
-	role: str  # agents behaviour at each round (required)
+	agent_id: str
+	role: str
 	recruiter: bool
 
 

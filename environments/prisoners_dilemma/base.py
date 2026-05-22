@@ -46,14 +46,8 @@ class MultiAgentEnvironment(abc.ABC):
 		self.interaction_count = 0
 		self.turn_count = 0
 		self.global_transcript: List[Dict[str, Any]] = []
-		self.metrics = self._initialize_metrics()
 		self._done = False
 		self.messages = {}
-
-	@abc.abstractmethod
-	def _initialize_metrics(self) -> Any:
-		"""Return an initialised metrics tracker for this environment."""
-		...
 
 	@abc.abstractmethod
 	def _generate_next_interaction(self) -> Optional[Interaction]:

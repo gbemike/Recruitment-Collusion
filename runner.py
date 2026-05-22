@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from agents.base import AgentContext
 from agents.llm import build_llm_agent
-from registry import make_environment
+from environments.prisoners_dilemma.base import EnvironmentConfig
+from environments.prisoners_dilemma.game import PrisonersDilemmaEnvironment
 
 try:
 	import yaml
@@ -24,7 +25,6 @@ except ImportError:
 class ExperimentRunner:
 	def __init__(self, config_data: Mapping[str, Any], verbose: bool = False):
 		self.config_data = config_data
-		self.scenario = config_data.get('scenario')
 		self.verbose = verbose
 
 		logging.basicConfig(
@@ -32,11 +32,16 @@ class ExperimentRunner:
 		)
 
 		env_overrides = self._extract_env_config(config_data)
-		self.env = make_environment(self.scenario, **env_overrides)
+		self.env = self._create_environment(env_overrides)
 		self.agents = self._setup_agents()
 
 		if hasattr(self.env, 'set_agent_refs'):
 			self.env.set_agent_refs(self.agents)
+
+	def _create_environment(self, env_overrides: Dict[str, Any]) -> PrisonersDilemmaEnvironment:
+		"""Create environment based on configs and overrides."""
+		config = EnvironmentConfig(**env_overrides)
+		return PrisonersDilemmaEnvironment(config)
 
 	def _extract_env_config(self, config_data: Mapping[str, Any]) -> Dict[str, Any]:
 		"""Extract environment configuration from config file."""
@@ -70,9 +75,7 @@ class ExperimentRunner:
 			if not role_config:
 				logging.warning(f'No LLM config found for name: {name}, using defaults')
 
-			agents[name] = build_llm_agent(
-				context=context, scenario=self.scenario, config=role_config
-			)
+			agents[name] = build_llm_agent(context=context, config=role_config)
 
 		return agents
 
@@ -100,7 +103,7 @@ class ExperimentRunner:
 
 	def run(self) -> Dict[str, Any]:
 		"""Execute environment episodes."""
-		logging.info(f'\nStarting {self.scenario} simulation')
+		logging.info(f'\nStarting simulation')
 		logging.info(f'Max interactions: {self.env.config.max_interactions}')
 		logging.info(f'Max turns per interaction: {self.env.config.max_turns_per_interaction}')
 		logging.info(f'Agent Names: {list(self.env.config.agent_names)}')
@@ -113,27 +116,15 @@ class ExperimentRunner:
 			observations, rewards, done, info = self.env.step(actions)
 			self._log_step_info(info)
 
-		metrics_summary = self.env.metrics.summary()
-
 		result = {
 			'total_interactions': self.env.interaction_count,
 			'total_turns': self.env.turn_count,
-			'metrics': metrics_summary,
 			'transcript': self.env.global_transcript,
 		}
 
 		logging.info(f'\n Simulation complete:')
 		logging.info(f'Total interactions (rounds): {result["total_interactions"]}')
 		logging.info(f'Total turns: {result["total_turns"]}')
-		if metrics_summary.get('final_points'):
-			logging.info(f'Final points: {metrics_summary["final_points"]}')
-			logging.info(f'Loser: {metrics_summary.get("loser", "N/A")}')
-		if metrics_summary.get('per_agent'):
-			decision_changes = {
-				agent_id: data.get('decision_changes', 0)
-				for agent_id, data in metrics_summary['per_agent'].items()
-			}
-			logging.info(f'Decision changes: {decision_changes} \n')
 
 		return result
 
@@ -188,7 +179,7 @@ class ExperimentRunner:
 
 
 def _load_config(path: str | Path) -> Mapping[str, Any]:
-	"""Load configuration from YAML or JSON file."""
+	"""Load configuration from a YAML file."""
 	path = Path(path)
 	if path.suffix in ['.yaml', '.yml']:
 		if yaml is None:
@@ -198,14 +189,11 @@ def _load_config(path: str | Path) -> Mapping[str, Any]:
 		with open(path, 'r') as f:
 			try:
 				return yaml.safe_load(f)
-			except yaml.YAMLError:
+			except yaml.YAMLError as e:
 				logging.exception(f'Invalid YAML in {path}')
-	# TODO: maybe remove json path
-	with open(path, 'r') as f:
-		try:
-			return json.load(f)
-		except json.JSONDecodeError:
-			logging.exception(f'Invalid JSON in {path}')
+				raise ValueError(f'Invalid YAML in {path}') from e
+
+	raise ValueError(f'Config must be a YAML file (.yaml or .yml): {path}')
 
 
 def _generate_run_id(config_path: str | Path) -> str:
@@ -230,6 +218,7 @@ def run_experiment(
 	logging.info(f'Run ID: {run_id}')
 
 	results = runner.run()
+
 	results['run_id'] = run_id
 
 	out_path = Path(output_dir)

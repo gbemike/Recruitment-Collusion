@@ -38,7 +38,6 @@ class LLMMessageGenerator:
 	"""
 
 	client: LLMClient
-	scenario: str
 	system_prompt: str = None
 	user_template: str = None
 	fallback_response: str = None
@@ -49,7 +48,9 @@ class LLMMessageGenerator:
 	# _last_context: Mapping[str, str] | None = field(default=None, init=False, repr=False)
 
 	@classmethod
-	def from_config(cls, scenario: str, config: Mapping[str, Any]) -> 'LLMMessageGenerator':
+	def from_config(cls, config: Mapping[str, Any] = None) -> 'LLMMessageGenerator':
+		if config is None:
+			config = {}
 		client = create_llm_client(config)
 		system_prompt = config.get('system_prompt')
 		user_template = config.get('user_prompt_template')
@@ -61,7 +62,6 @@ class LLMMessageGenerator:
 
 		return cls(
 			client=client,
-			scenario=scenario,
 			system_prompt=system_prompt,
 			user_template=user_template,
 			fallback_response=fallback_response,
@@ -77,7 +77,6 @@ class LLMMessageGenerator:
 		for key, value in observation.items():
 			render_context[key] = _stringify(value)
 		render_context['role'] = role
-		render_context['scenario'] = self.scenario
 
 		user_prompt = (self.user_template).format_map(render_context)
 		# self._last_context = dict(render_context)
@@ -90,7 +89,7 @@ class LLMMessageGenerator:
 		if self.response_format:
 			extra['response_format'] = self.response_format
 
-		logger.debug(f'generate-start role={role} scenario={self.scenario}')
+		logger.debug(f'generate-start role={role}')
 
 		gen_result: GenerationResult = self.client.generate(
 			user_prompt,
@@ -304,9 +303,9 @@ class LLMRecruiterAgent(RecruiterAgent):
 		return result['content']
 
 
-def build_llm_agent(context: AgentContext, scenario: str, config: Mapping[str, Any]) -> BaseAgent:
+def build_llm_agent(context: AgentContext, config: Mapping[str, Any]) -> BaseAgent:
 	"""Factory for LLM-backed agents using provided config."""
-	generator = LLMMessageGenerator.from_config(scenario, config)
+	generator = LLMMessageGenerator.from_config(config)
 
 	if context.role == 'recruiter' or context.recruiter:
 		return LLMRecruiterAgent(context, generator)

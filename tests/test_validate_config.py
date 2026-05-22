@@ -1,5 +1,6 @@
 import pytest
-from helpers.validate_config import validate_config_file, ConfigPath
+from helpers.validate_config import validate_config_file
+from schema import ConfigPath
 
 
 def test_validate_config(valid_config_data):
