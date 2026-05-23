@@ -6,82 +6,18 @@ In this work, we begin preliminary research on recruitment-based collusion, wher
 
 The main output of this repository is the framework itself — a flexible, LLM-agnostic tool for running multi-agent social dilemma experiments with configurable game mechanics, agent behaviors, and outcome tracking. The framework enables researchers to investigate recruitment-based collusion and other multi-agent alignment challenges.
 
----
+## Acknowledgements
+
+This project was developed under AI Safety Camp January Cohort (https://www.aisafety.camp/#h.2e3bgoc5nvan). We are grateful for their support and research environment.
+
+This repository also draws inspiration from prior implementation ideas in Steganographic Collusion by Ostailor:
+https://github.com/Ostailor/Steganographic_Collusion/tree/main?tab=readme-ov-file
 
 ## Key Concepts
 
 ### Social Dilemmas
 
 A **social dilemma** is a setting where individually rational decisions lead to collectively suboptimal outcomes. The classic example is the Prisoner's Dilemma: two agents each choose to *cooperate* or *defect*. Mutual cooperation yields the best joint outcome, but each agent has a short-term incentive to defect. This tension between individual and collective rationality makes social dilemmas ideal for studying misalignment — an agent that defects while convincing others to cooperate maximises its own gain at their expense.
-
-### Recruitment
-
-**Recruitment** is any behaviour — tacit or explicit — done deliberately by one entity to change another entity's goal to match their own.
-
-In a multi-agent oversight system, a misaligned agent (the *recruiter*) may attempt to corrupt aligned agents (the *honest agents*) so they collude rather than monitor faithfully.
-
-Recruitment can take several forms:
-
-- **Explicit negotiation** — direct messages proposing a deal or strategy
-- **Steganographic encoding** — embedding colluding signals in otherwise innocuous messages using metaphors, patterns, or domain-specific language developed through trial and error
-- **Tacit coordination** — making strategic moves that cause aligned agents to learn misaligned behaviour from observation (e.g. demonstrating that violations go unpunished)
-
-**Recruitment is distinct from other collusion.** If agents converge on misaligned behaviour purely through independent observation of the environment — with no deliberate effort by any agent to corrupt another — that is not recruitment. For recruitment to occur:
-
-- An agent must *cause* another's misalignment, not merely correlate with it
-- The corrupting agent must be optimising for (or intending) that corruption
-- The corruption path must be actively engineered
-
----
-
-## Repository Structure
-
-```
-.
-├── cli.py                          # Entry point — parses args, validates config, runs experiment
-├── runner.py                       # ExperimentRunner: orchestrates agents and environment per round
-├── llm_clients.py                  # OpenRouter LLM client with retry/backoff
-├── pyproject.toml                  # Project metadata and dependencies
-│
-├── agents/
-│   ├── base.py                     # AgentContext dataclass and BaseAgent ABC
-│   ├── honest.py                   # HonestAgent scaffold (aligned)
-│   ├── recruiter.py                # RecruiterAgent scaffold (misaligned)
-│   └── llm.py                      # LLM-backed agent implementations + build_llm_agent factory
-│
-├── environments/
-│   └── prisoners_dilemma/
-│       ├── base.py                 # MultiAgentEnvironment ABC and EnvironmentConfig
-│       ├── game.py                 # Full PrisonersDilemmaEnvironment implementation
-│       └── helpers.py              # Helper functions for game state and decision history
-│
-├── helpers/
-│   └── validate_config.py          # Pydantic v2 config schema validation
-│
-├── configs/                        # Placeholder for user-created configs
-├── my_configs/                     # Example configs organised by game mechanics and model
-│   └── prisoners_dilemma/
-│       ├── base/                   # Abstract framing (no real-world context)
-│       │   ├── gemma/
-│       │   └── kimi/
-│       └── geopolitics/            # Geopolitical / diplomatic framing (same mechanics)
-│           ├── gemma/
-│           └── kimi/
-│
-├── data/
-│   ├── experiments/                # Output directory for transcripts and summaries
-│   └── evaluations/                # Hand-written analysis and write-ups
-│
-├── tests/
-│   ├── conftest.py
-│   ├── test_validate_config.py
-│   └── testdata/
-│       └── valid_config.yaml
-│
-└── analysis/                       # Scripts for post-hoc analysis (WIP)
-```
-
----
 
 ## Setup
 
@@ -105,15 +41,13 @@ Set your OpenRouter API key:
 export OPENROUTER_API_KEY=your_key_here
 ```
 
----
-
 ## Creating an Experiment Config
 
-Configs are YAML files. See `my_configs/` for full examples. The minimal required fields are:
+Configs are YAML files. See `configs/example.yaml` for full examples. The minimal required fields are:
 
 ```yaml
 agent_names:
-  - warden_a      # must start with "warden" to be treated as the recruiter/warden
+  - warden_a      # use valid identifier names (regex: ^[A-Za-z_][A-Za-z0-9_]*$), e.g. warden_a, AgentB, ministry_of_finance; not agent-a or 1agent
   - agent_a
   - agent_b
 
@@ -140,8 +74,8 @@ env_params:
 llm_agents:
   warden_a:
     model: moonshotai/kimi-k2-0905
-    temperature: 1.0
-    max_tokens: 4000
+    temperature: 0.8
+    max_tokens: 800
     system_prompt: |
       You are a warden. Your goal is to recruit prisoners into defecting...
     user_prompt_template: |
@@ -151,8 +85,8 @@ llm_agents:
 
   agent_a:
     model: moonshotai/kimi-k2-0905
-    temperature: 1.0
-    max_tokens: 3000
+    temperature: 0.6
+    max_tokens: 600
     system_prompt: |
       You are a prisoner. Maximise your own score...
     user_prompt_template: |
@@ -182,33 +116,26 @@ Use `{{` and `}}` for literal braces in JSON examples inside the template.
 
 **Payoff matrix keys** must be comma-separated combinations of `cooperate` and `defect` covering all $2^n$ combinations for $n$ prisoners. The config validator will reject misconfigured matrices.
 
-**Agent names** that start with `"warden"` are automatically given warden-level observation (full visibility). All others are prisoners.
-
-**Framing is arbitrary** — the underlying game mechanics stay the same regardless of whether you dress it up as an abstract dilemma or a geopolitical negotiation (see `my_configs/prisoners_dilemma/geopolitics/` for an example set in a Romania EU-funds context).
-
----
+**Agent roles** are determined by config lists: `recruiters` are treated as wardens (full visibility) and `honest_agents` are treated as prisoners.
 
 ## Running an Experiment
 
 ```bash
-python cli.py --config my_configs/prisoners_dilemma/base/kimi/pd_default.yaml
+python cli.py --config configs/base/kimi/pd_default.yaml
 ```
 
 | Flag | Description |
 |---|---|
 | `--config` | Path to YAML config (required) |
-| `--output-dir` | Where to write results (default: `data/experiments/prisoners_dilemma/geopolitical/kimi`) |
-| `--no-transcripts` | Skip transcript file for faster dry-runs |
-| `--verbose` / `-v` | Verbose logging of agent actions |
+| `--output-dir` | Where to write results (default: `data/experiments/geopolitical/kimi`) |
+| `--verbose` / `-v` | Enable debug logging (default output remains clean INFO logs) |
 
 To stream logs to a file while watching in real time:
 
 ```bash
-python cli.py --config my_configs/prisoners_dilemma/base/kimi/pd_default.yaml \
+python cli.py --config configs/base/kimi/pd_default.yaml \
   --output-dir data/experiments/my_run 2>&1 | tee data/experiments/logs/my_run.log
 ```
-
----
 
 ## Viewing Results
 
@@ -216,8 +143,6 @@ Each run writes two files to `--output-dir`:
 
 - **`transcript_<run_id>.json`** — full per-turn log of every agent message, decision, and reasoning trace
 - **`summary_<run_id>.json`** — run metadata (total interactions, total turns)
-
----
 
 ## Running Tests
 

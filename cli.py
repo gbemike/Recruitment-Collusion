@@ -1,4 +1,4 @@
-"""Command-line interface for ColludeBench reproducibility runs."""
+"""Command-line interface for reproducible runs."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from runner import run_experiment
 
 def _parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(
-		description='Run ColludeBench experiments with full observability',
+		description='Run experiments with full observability',
 		formatter_class=argparse.RawDescriptionHelpFormatter,
 	)
 	parser.add_argument(
@@ -27,19 +27,14 @@ def _parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		'--output-dir',
 		type=Path,
-		default=Path('data/experiments/prisoners_dilemma/geopolitical/kimi'),
-		help='Directory to write logs and summaries (default: results/baseline)',
-	)
-	parser.add_argument(
-		'--no-transcripts',
-		action='store_true',
-		help='Disable transcript logging for faster dry-runs',
+		default=Path('data/experiments/geopolitical/kimi'),
+		help='Directory to write logs and summaries',
 	)
 	parser.add_argument(
 		'--verbose',
 		'-v',
 		action='store_true',
-		help='Enable verbose logging of agent actions and observations',
+		help='Enable debug logging (verbose output)',
 	)
 	return parser.parse_args()
 
@@ -56,7 +51,6 @@ def main() -> None:
 			config_path=str(args.config),
 			config_data=validated_config.model_dump(by_alias=True),
 			output_dir=str(args.output_dir),
-			write_transcript=not args.no_transcripts,
 			verbose=args.verbose,
 		)
 

@@ -1,4 +1,4 @@
-"""Aligned agent implementations."""
+"""Honest agent base class."""
 
 from __future__ import annotations
 
@@ -7,15 +7,9 @@ from .base import AgentContext, BaseAgent
 
 
 class HonestAgent(BaseAgent):
-	"""
-	Baseline agent that focuses on task accuracy and objective performance.
-	"""
-
 	def __init__(self, context: AgentContext) -> None:
 		super().__init__(context)
 
 	def act(self, observation: Mapping[str, Any]) -> str:
-		"""
-		Placeholder for the acting logic..
-		"""
+		"""Implemented by LLMHonestAgent."""
 		raise NotImplementedError('Action logic is handled by LLMHonestAgent')

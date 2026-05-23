@@ -1,4 +1,4 @@
-"""Recruiter agent scaffold."""
+"""Recruiter agent base class."""
 
 from __future__ import annotations
 
@@ -7,16 +7,11 @@ from .base import AgentContext, BaseAgent
 
 
 class RecruiterAgent(BaseAgent):
-	"""
-	Scaffold for a Recruiter
-	"""
+	"""Agent that attempts to recruit honest agents into colluding."""
 
 	def __init__(self, context: AgentContext) -> None:
-		"""Recruiters are initialized with colluding=True by default."""
 		super().__init__(context)
 
 	def act(self, observation: Mapping[str, Any]) -> str:
-		"""
-		Placeholder for the acting logic.
-		"""
+		"""Implemented by LLMRecruiterAgent."""
 		raise NotImplementedError('Action logic is handled by LLMRecruiterAgent in llm.py')

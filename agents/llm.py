@@ -1,4 +1,4 @@
-"""LLM-backed agent implementations for social contagion."""
+"""LLM-backed agent implementations for recruitment-based collusion experiments."""
 
 from __future__ import annotations
 

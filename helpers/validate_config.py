@@ -9,8 +9,6 @@ import yaml
 
 from schema import ConfigPath
 
-__all__ = ['validate_config_file', 'ConfigPath']
-
 
 def validate_config_file(config_path: Path) -> ConfigPath:
 	"""Validate and load configuration from a YAML file."""

@@ -1,4 +1,4 @@
-"""Agent interface definitions for ColludeBench."""
+"""Agent interface definitions."""
 
 from __future__ import annotations
 

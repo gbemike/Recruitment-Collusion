@@ -13,19 +13,15 @@ logger = logging.getLogger(__name__)
 # constants
 COOPERATE = 'cooperate'
 DEFECT = 'defect'
-WARDEN = 'warden'
 
 
 class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
 	def __init__(self, config: EnvironmentConfig):
 		custom = config.env_params
 
-		# identify wardens vs prisoners
-		# should be role based, in recruiters vs honest_agents
-		self.wardens = [
-			name for name in config.agent_names if name == WARDEN or name.startswith(WARDEN)
-		]
-		self.prisoners = [name for name in config.agent_names if name not in self.wardens]
+		# identify wardens vs prisoners from config roles
+		self.wardens = list(config.recruiters)
+		self.prisoners = list(config.honest_agents)
 
 		self.starting_points = custom.get('starting_points', 100)
 		self.round_cost = custom.get('round_cost', 2)
@@ -175,7 +171,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
 		else:
 			obs = base_obs
 
-		logger.info(
+		logger.debug(
 			f"[Round {context['round_number']}, Turn {context['turn_in_round']}] Agent '{agent_id}' observation: {obs}"
 		)
 		return obs
@@ -258,7 +254,7 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
 		actions = self._parse_all_actions(agent_actions)
 		is_final_turn = self.current_turn_in_round >= self.max_turns
 
-		logger.info(
+		logger.debug(
 			f'[Round {self.round_number}, Turn {self.current_turn_in_round}] Step executed with actions from agents: {list(agent_actions.keys())}'
 		)
 
@@ -536,11 +532,11 @@ class PrisonersDilemmaEnvironment(MultiAgentEnvironment):
 				# bonus awarded if recruited AND prisoner followed the warden's advice
 				if advice in (COOPERATE, DEFECT) and prisoner_decision == advice:
 					bonuses[prisoner] += float(self.warden_bonus)
-					logger.info(
+					logger.debug(
 						f'[Round {self.round_number}] Bonus awarded to {prisoner}: advice={advice}, decision={prisoner_decision}, bonus={self.warden_bonus}'
 					)
 				else:
-					logger.info(
+					logger.debug(
 						f'[Round {self.round_number}] No bonus for {prisoner}: advice={advice}, decision={prisoner_decision}'
 					)
 

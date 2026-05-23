@@ -154,7 +154,7 @@ class OpenRouterClient(LLMClient):
 				elif fmt_type == 'json_object':
 					body['response_format'] = {'type': 'json_object'}
 
-		logger.info(
+		logger.debug(
 			f'[OpenRouterClient] Request model={self.model}, has_response_format={"response_format" in body}, has_reasoning={"reasoning" in body}'
 		)
 
@@ -173,7 +173,7 @@ class OpenRouterClient(LLMClient):
 				)
 				if attempt < self.max_retries:
 					wait = self._backoff_wait(attempt)
-					logger.info(f'[OpenRouterClient] Retrying in {wait:.1f}s...')
+					logger.debug(f'[OpenRouterClient] Retrying in {wait:.1f}s...')
 					time.sleep(wait)
 					continue
 				logger.error(
@@ -205,7 +205,7 @@ class OpenRouterClient(LLMClient):
 
 			usage = result.get('usage', {})
 			if usage:
-				logger.info(
+				logger.debug(
 					f'[OpenRouterClient] Tokens: in={usage.get("prompt_tokens", "?")}, '
 					f'out={usage.get("completion_tokens", "?")}, '
 					f'total={usage.get("total_tokens", "?")}'
@@ -248,8 +248,8 @@ class OpenRouterClient(LLMClient):
 
 		raw_reasoning = ''
 
-		logger.info(f'[OpenRouterClient] raw reasoning field: {repr(message.get("reasoning"))}')
-		logger.info(
+		logger.debug(f'[OpenRouterClient] raw reasoning field: {repr(message.get("reasoning"))}')
+		logger.debug(
 			f'[OpenRouterClient] raw reasoning_details: {repr(message.get("reasoning_details"))}'
 		)
 
@@ -274,7 +274,7 @@ class OpenRouterClient(LLMClient):
 						parts.append(detail)
 				raw_reasoning = '\n'.join(parts)
 
-		logger.info(
+		logger.debug(
 			f'[OpenRouterClient] message keys={list(message.keys())}, '
 			f'reasoning_len={len(raw_reasoning)}, '
 			f'content_len={len(content)}'

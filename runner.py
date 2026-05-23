@@ -28,7 +28,9 @@ class ExperimentRunner:
 		self.verbose = verbose
 
 		logging.basicConfig(
-			level='DEBUG', format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', force=True
+			level=logging.DEBUG if verbose else logging.INFO,
+			format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+			force=True,
 		)
 
 		env_overrides = self._extract_env_config(config_data)
@@ -92,7 +94,7 @@ class ExperimentRunner:
 				action = self.agents[agent_id].act(observation)
 				actions[agent_id] = action
 				preview = str(action)[:200] + ('...' if len(str(action)) > 200 else '')
-				logging.info(f'  [{agent_id}] {preview}')
+				logging.debug(f'  [{agent_id}] {preview}')
 			except Exception as e:
 				logging.error(f'Error getting action from {agent_id}: {e}')
 				raise
@@ -206,11 +208,11 @@ def run_experiment(
 	config_path: str | Path,
 	config_data: Optional[Mapping[str, Any]] = None,
 	output_dir: str | Path = 'results',
-	write_transcript: bool = True,
 	verbose: bool = False,
 ) -> Dict[str, Any]:
 	"""Run single experiment from config file by default."""
-	config = config_data if config_data is not None else _load_config(config_path)
+	# config = config_data if config_data is not None else _load_config(config_path)
+	config = config_data
 
 	runner = ExperimentRunner(config, verbose=verbose)
 
@@ -224,11 +226,10 @@ def run_experiment(
 	out_path = Path(output_dir)
 	out_path.mkdir(parents=True, exist_ok=True)
 
-	if write_transcript:
-		logging.info(f'Saving transcripts to {out_path}')
-		transcript_file = out_path / f'transcript_{run_id}.json'
-		with open(transcript_file, 'w') as f:
-			json.dump(results.get('transcript', []), f, indent=2, default=str)
+	logging.info(f'Saving transcripts to {out_path}')
+	transcript_file = out_path / f'transcript_{run_id}.json'
+	with open(transcript_file, 'w') as f:
+		json.dump(results.get('transcript', []), f, indent=2, default=str)
 
 	summary_file = out_path / f'summary_{run_id}.json'
 	with open(summary_file, 'w') as f:
