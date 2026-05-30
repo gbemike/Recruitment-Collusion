@@ -144,6 +144,8 @@ Each run writes two files to `--output-dir`:
 - **`transcript_<run_id>.json`** — full per-turn log of every agent message, decision, and reasoning trace
 - **`summary_<run_id>.json`** — run metadata (total interactions, total turns)
 
+Check `data_example/experiments/` to view a real transcript file generated from an experiment we ran.
+
 ## Running Tests
 
 ```bash

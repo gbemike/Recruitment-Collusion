@@ -7,7 +7,9 @@ from .base import AgentContext, BaseAgent
 
 
 class RecruiterAgent(BaseAgent):
-	"""Agent that attempts to recruit honest agents into colluding."""
+	"""
+	Scaffold for a Recruiter
+	"""
 
 	def __init__(self, context: AgentContext) -> None:
 		super().__init__(context)
